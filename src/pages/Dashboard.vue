@@ -2,7 +2,7 @@
     <div>
         <v-row v-if="isMobile">
             <v-col>
-                <status-panel />
+                <status-panel v-if="!demoMode" />
                 <template v-for="component in mobileLayout">
                     <component
                         :is="extractPanelName(component.name)"
@@ -13,7 +13,7 @@
         </v-row>
         <v-row v-else-if="isTablet">
             <v-col class="col-6">
-                <status-panel />
+                <status-panel v-if="!demoMode" />
                 <template v-for="component in tabletLayout1">
                     <component
                         :is="extractPanelName(component.name)"
@@ -32,7 +32,7 @@
         </v-row>
         <v-row v-else-if="isDesktop">
             <v-col class="col-5">
-                <status-panel />
+                <status-panel v-if="!demoMode" />
                 <template v-for="component in desktopLayout1">
                     <component
                         :is="extractPanelName(component.name)"
@@ -51,7 +51,7 @@
         </v-row>
         <v-row v-else-if="isWidescreen">
             <v-col class="col-3">
-                <status-panel />
+                <status-panel v-if="!demoMode" />
                 <template v-for="component in widescreenLayout1">
                     <component
                         :is="extractPanelName(component.name)"
@@ -123,36 +123,46 @@ import WebcamPanel from '@/components/panels/WebcamPanel.vue'
     },
 })
 export default class PageDashboard extends Mixins(DashboardMixin) {
+    // ?demo=1 shows only the G-Code Preview panel, for demoing/screenshotting the
+    // feature without the rest of a real dashboard's clutter - not persisted anywhere
+    get demoMode(): boolean {
+        return 'demo' in this.$route.query
+    }
+
+    get demoOnlyLayout() {
+        return [{ name: 'gcode-preview', visible: true }]
+    }
+
     get mobileLayout() {
-        return this.$store.getters['gui/getPanels']('mobile', 0, true)
+        return this.demoMode ? this.demoOnlyLayout : this.$store.getters['gui/getPanels']('mobile', 0, true)
     }
 
     get tabletLayout1() {
-        return this.$store.getters['gui/getPanels']('tablet', 1, true)
+        return this.demoMode ? this.demoOnlyLayout : this.$store.getters['gui/getPanels']('tablet', 1, true)
     }
 
     get tabletLayout2() {
-        return this.$store.getters['gui/getPanels']('tablet', 2, true)
+        return this.demoMode ? [] : this.$store.getters['gui/getPanels']('tablet', 2, true)
     }
 
     get desktopLayout1() {
-        return this.$store.getters['gui/getPanels']('desktop', 1, true)
+        return this.demoMode ? this.demoOnlyLayout : this.$store.getters['gui/getPanels']('desktop', 1, true)
     }
 
     get desktopLayout2() {
-        return this.$store.getters['gui/getPanels']('desktop', 2, true)
+        return this.demoMode ? [] : this.$store.getters['gui/getPanels']('desktop', 2, true)
     }
 
     get widescreenLayout1() {
-        return this.$store.getters['gui/getPanels']('widescreen', 1, true)
+        return this.demoMode ? this.demoOnlyLayout : this.$store.getters['gui/getPanels']('widescreen', 1, true)
     }
 
     get widescreenLayout2() {
-        return this.$store.getters['gui/getPanels']('widescreen', 2, true)
+        return this.demoMode ? [] : this.$store.getters['gui/getPanels']('widescreen', 2, true)
     }
 
     get widescreenLayout3() {
-        return this.$store.getters['gui/getPanels']('widescreen', 3, true)
+        return this.demoMode ? [] : this.$store.getters['gui/getPanels']('widescreen', 3, true)
     }
 
     extractPanelName(name: string) {

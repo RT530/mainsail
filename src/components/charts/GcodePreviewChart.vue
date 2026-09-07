@@ -219,7 +219,11 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     display: block;
     width: 100%;
     height: auto;
-    max-height: calc(100vh - 180px);
+    /* a percentage max-height only resolves against a definite parent height - on the
+       dedicated page (GcodePreviewPanel.vue's flex chart-wrap) that caps it to the
+       viewport; on the dashboard, where the wrap's height is just auto, it's a no-op */
+    max-width: 100%;
+    max-height: 100%;
     margin: 0 auto;
 }
 </style>

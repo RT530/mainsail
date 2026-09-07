@@ -10,28 +10,40 @@
                 <v-icon>{{ mdiRefresh }}</v-icon>
             </v-btn>
         </template>
-        <v-card-text :class="hasFile && !error ? 'gcode-preview-content' : ''" style="position: relative">
+        <v-card-text
+            :class="[
+                hasFile && !error ? 'gcode-preview-content' : '',
+                hasFile && !error && currentPage === 'page' ? 'gcode-preview-content--page' : '',
+            ]">
             <p v-if="error" class="text-center mb-0 text--disabled">{{ error }}</p>
             <p v-else-if="!hasFile" class="text-center mb-0 text--disabled">
                 {{ $t('Panels.GcodePreviewPanel.NoFile') }}
             </p>
             <template v-else>
-                <v-checkbox
-                    v-model="showMovePath"
-                    :label="$t('Panels.GcodePreviewPanel.ShowMovePath')"
-                    class="gcode-preview-movepath-toggle"
-                    hide-details
-                    dense />
-                <div class="gcode-preview-layer-label">
-                    {{ $t('Panels.GcodePreviewPanel.Layer', { current: currentLayerIndex + 1, total: layers.length }) }}
+                <div class="gcode-preview-toolbar">
+                    <v-checkbox
+                        v-model="showMovePath"
+                        :label="$t('Panels.GcodePreviewPanel.ShowMovePath')"
+                        hide-details
+                        dense />
+                    <div class="gcode-preview-layer-label">
+                        {{
+                            $t('Panels.GcodePreviewPanel.Layer', {
+                                current: currentLayerIndex + 1,
+                                total: layers.length,
+                            })
+                        }}
+                    </div>
                 </div>
-                <gcode-preview-chart
-                    :runs="currentLayerRuns"
-                    :travels="showMovePath ? currentLayerTravels : []"
-                    :progress-offset="fileProgressOffset"
-                    :tool-position="toolPositionXY"
-                    :bed-min="bedMin"
-                    :bed-max="bedMax" />
+                <div class="gcode-preview-chart-wrap">
+                    <gcode-preview-chart
+                        :runs="currentLayerRuns"
+                        :travels="showMovePath ? currentLayerTravels : []"
+                        :progress-offset="fileProgressOffset"
+                        :tool-position="toolPositionXY"
+                        :bed-min="bedMin"
+                        :bed-max="bedMax" />
+                </div>
             </template>
         </v-card-text>
     </panel>
@@ -45,6 +57,7 @@ import GcodePreviewChart from '@/components/charts/GcodePreviewChart.vue'
 import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
 import { GcodePreviewLayer, GcodePreviewPoint, GcodePreviewRun } from './GcodePreview/parser'
+import { generateDemoGcode } from './GcodePreview/demoGcode'
 import { escapePath } from '@/plugins/helpers'
 import axios, { CancelTokenSource } from 'axios'
 import { mdiRefresh, mdiVideo2d } from '@mdi/js'
@@ -80,22 +93,11 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return 'demo' in this.$route.query
     }
 
-    private async loadDemoFile(): Promise<void> {
-        const filename = 'demo_preview.gcode'
+    private loadDemoFile(): void {
         this.loading = true
         this.error = null
         this.layers = []
-
-        try {
-            const response = await axios.get<string>(
-                this.apiUrl + '/server/files/' + escapePath('gcodes/' + filename),
-                { responseType: 'text' }
-            )
-            this.parseInWorker(response.data, filename)
-        } catch {
-            this.error = this.$t('Panels.GcodePreviewPanel.LoadError').toString()
-            this.loading = false
-        }
+        this.parseInWorker(generateDemoGcode(), 'demo_preview.gcode')
     }
 
     @Watch('layers')
@@ -284,24 +286,43 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     padding: 10px;
 }
 
+/* on the dedicated page, fit the panel to the viewport instead of letting the bed's
+   aspect ratio push the page taller than the screen - the toolbar row above the chart
+   is a fixed-size flex item, so the chart wrap gets whatever height remains regardless
+   of the toolbar's own size */
+.gcode-preview-content--page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 148px);
+    box-sizing: border-box;
+}
+
+.gcode-preview-chart-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.gcode-preview-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    flex: 0 0 auto;
+}
+
+.gcode-preview-toolbar ::v-deep .v-input--checkbox {
+    margin-top: 0;
+    padding-top: 0;
+}
+
 .gcode-preview-layer-label {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    z-index: 1;
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 0.75rem;
     background: rgba(0, 0, 0, 0.5);
     color: #fff;
-}
-
-.gcode-preview-movepath-toggle {
-    position: absolute;
-    top: 0;
-    left: 6px;
-    z-index: 1;
-    margin-top: 0;
-    padding-top: 0;
 }
 </style>

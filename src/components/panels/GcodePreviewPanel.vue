@@ -3,36 +3,48 @@
         :icon="mdiVideo2d"
         :title="$t('Panels.GcodePreviewPanel.Headline')"
         card-class="gcode-preview-panel"
-        :loading="loading">
+        :loading="loading"
+        :margin-bottom="currentPage !== 'page'">
         <template #buttons>
             <v-btn icon tile :disabled="!sdCardFilePath" @click="loadFile(true)">
                 <v-icon>{{ mdiRefresh }}</v-icon>
             </v-btn>
         </template>
-        <v-card-text :class="hasFile && !error ? 'gcode-preview-content' : ''">
+        <v-card-text :class="hasFile && !error ? 'gcode-preview-content' : ''" style="position: relative">
             <p v-if="error" class="text-center mb-0 text--disabled">{{ error }}</p>
             <p v-else-if="!hasFile" class="text-center mb-0 text--disabled">
                 {{ $t('Panels.GcodePreviewPanel.NoFile') }}
             </p>
-            <gcode-preview-chart
-                v-else
-                :runs="runs"
-                :progress-offset="fileProgressOffset"
-                :tool-position="toolPositionXY"
-                :bed-min="bedMin"
-                :bed-max="bedMax" />
+            <template v-else>
+                <v-checkbox
+                    v-model="showMovePath"
+                    :label="$t('Panels.GcodePreviewPanel.ShowMovePath')"
+                    class="gcode-preview-movepath-toggle"
+                    hide-details
+                    dense />
+                <div class="gcode-preview-layer-label">
+                    {{ $t('Panels.GcodePreviewPanel.Layer', { current: currentLayerIndex + 1, total: layers.length }) }}
+                </div>
+                <gcode-preview-chart
+                    :runs="currentLayerRuns"
+                    :travels="showMovePath ? currentLayerTravels : []"
+                    :progress-offset="fileProgressOffset"
+                    :tool-position="toolPositionXY"
+                    :bed-min="bedMin"
+                    :bed-max="bedMax" />
+            </template>
         </v-card-text>
     </panel>
 </template>
 
 <script lang="ts">
-import { Component, Mixins, Watch } from 'vue-property-decorator'
+import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
 import BaseMixin from '../mixins/base'
 import Panel from '@/components/ui/Panel.vue'
 import GcodePreviewChart from '@/components/charts/GcodePreviewChart.vue'
 import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
-import { GcodePreviewRun } from './GcodePreview/parser'
+import { GcodePreviewLayer, GcodePreviewPoint, GcodePreviewRun } from './GcodePreview/parser'
 import { escapePath } from '@/plugins/helpers'
 import axios, { CancelTokenSource } from 'axios'
 import { mdiRefresh, mdiVideo2d } from '@mdi/js'
@@ -43,37 +55,130 @@ const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
     components: { Panel, GcodePreviewChart },
 })
 export default class GcodePreviewPanel extends Mixins(BaseMixin) {
+    @Prop({ default: 'dashboard' }) declare currentPage?: string
+
     mdiRefresh = mdiRefresh
     mdiVideo2d = mdiVideo2d
 
     loading = false
     error: string | null = null
-    runs: GcodePreviewRun[] = []
+    layers: GcodePreviewLayer[] = []
     loadedFilename: string | null = null
+    showMovePath = false
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
+
+    // ===== DEMO MODE (screenshot only) - remove before commit =====
+    private demoTimer: number | null = null
+    private demoFlatPoints: GcodePreviewPoint[] = []
+    private demoPointIndex = 0
+    demoProgressOffset = 0
+    demoToolPosition: [number, number] | null = null
+
+    get demoMode(): boolean {
+        return 'demo' in this.$route.query
+    }
+
+    private async loadDemoFile(): Promise<void> {
+        const filename = 'demo_preview.gcode'
+        this.loading = true
+        this.error = null
+        this.layers = []
+
+        try {
+            const response = await axios.get<string>(
+                this.apiUrl + '/server/files/' + escapePath('gcodes/' + filename),
+                { responseType: 'text' }
+            )
+            this.parseInWorker(response.data, filename)
+        } catch {
+            this.error = this.$t('Panels.GcodePreviewPanel.LoadError').toString()
+            this.loading = false
+        }
+    }
+
+    @Watch('layers')
+    onDemoLayersChanged(newLayers: GcodePreviewLayer[]): void {
+        if (this.demoMode && newLayers.length > 0 && this.demoTimer === null) this.startDemoAnimation()
+    }
+
+    private startDemoAnimation(): void {
+        this.demoFlatPoints = this.layers.flatMap((layer) => layer.runs.flat())
+        if (this.demoFlatPoints.length === 0) return
+
+        const maxOffset = this.demoFlatPoints[this.demoFlatPoints.length - 1].offset
+        const durationMs = 20000
+        const startTime = Date.now()
+
+        this.demoTimer = window.setInterval(() => {
+            const elapsed = Date.now() - startTime
+            const loopElapsed = elapsed % durationMs
+            if (loopElapsed < 100) this.demoPointIndex = 0
+
+            const targetOffset = (loopElapsed / durationMs) * maxOffset
+            this.demoProgressOffset = targetOffset
+
+            while (
+                this.demoPointIndex < this.demoFlatPoints.length - 1 &&
+                this.demoFlatPoints[this.demoPointIndex + 1].offset <= targetOffset
+            ) {
+                this.demoPointIndex++
+            }
+            const point = this.demoFlatPoints[this.demoPointIndex]
+            this.demoToolPosition = [point.x, point.y]
+        }, 100)
+    }
+    // ===== END DEMO MODE =====
 
     get sdCardFilePath(): string {
         return this.$store.state.printer.print_stats?.filename ?? ''
     }
 
     get hasFile(): boolean {
-        return this.runs.length > 0
+        return this.layers.length > 0
     }
 
     // once a print isn't actively running/paused, treat the whole path as completed
     get fileProgressOffset(): number {
+        if (this.demoMode) return this.demoProgressOffset
         if (!this.printerIsPrinting) return Number.MAX_SAFE_INTEGER
 
         return this.$store.state.printer.virtual_sdcard?.file_position ?? 0
     }
 
+    // a layer's own runs are always in increasing offset order (the file is scanned
+    // top to bottom), so its first/last point give the layer's offset range for free
+    get layerStartOffsets(): number[] {
+        return this.layers.map((layer) => layer.runs[0]?.[0]?.offset ?? 0)
+    }
+
+    // which layer is "current" is derived from the same progress value used for the
+    // done/remaining split - the layer whose extrusion starts at or before the current
+    // file position is the one actively being (or last) printed
+    get currentLayerIndex(): number {
+        const progress = this.fileProgressOffset
+        for (let i = this.layerStartOffsets.length - 1; i >= 0; i--) {
+            if (progress >= this.layerStartOffsets[i]) return i
+        }
+        return 0
+    }
+
+    get currentLayerRuns(): GcodePreviewRun[] {
+        return this.layers[this.currentLayerIndex]?.runs ?? []
+    }
+
+    get currentLayerTravels(): GcodePreviewRun[] {
+        return this.layers[this.currentLayerIndex]?.travels ?? []
+    }
+
     get bedMin(): number[] {
+        if (this.demoMode) return [0, 0]
         return this.$store.state.printer.toolhead?.axis_minimum ?? [0, 0]
     }
 
     get bedMax(): number[] {
+        if (this.demoMode) return [250, 250]
         return this.$store.state.printer.toolhead?.axis_maximum ?? [200, 200]
     }
 
@@ -86,6 +191,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     }
 
     get toolPositionXY(): [number, number] | null {
+        if (this.demoMode) return this.demoToolPosition
         if (!this.printerIsPrinting) return null
 
         return [this.livePosition[0] - this.gcodeOffset[0], this.livePosition[1] - this.gcodeOffset[1]]
@@ -99,12 +205,17 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     }
 
     mounted(): void {
+        if (this.demoMode) {
+            this.loadDemoFile()
+            return
+        }
         if (this.sdCardFilePath) this.loadFile()
     }
 
     beforeDestroy(): void {
         this.cancelTokenSource?.cancel('component destroyed')
         this.worker?.terminate()
+        if (this.demoTimer !== null) window.clearInterval(this.demoTimer)
     }
 
     async loadFile(force = false): Promise<void> {
@@ -118,7 +229,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 
         this.loading = true
         this.error = null
-        this.runs = []
+        this.layers = []
 
         const cancelTokenSource = axios.CancelToken.source()
         this.cancelTokenSource = cancelTokenSource
@@ -152,7 +263,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 
         worker.onmessage = (event: MessageEvent<GcodePreviewWorkerOutMessage>) => {
             if (event.data.type === 'result') {
-                this.runs = event.data.runs
+                this.layers = event.data.layers
                 this.loadedFilename = filename
             } else {
                 this.error = event.data.message
@@ -171,5 +282,26 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 <style scoped>
 .gcode-preview-content {
     padding: 10px;
+}
+
+.gcode-preview-layer-label {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+}
+
+.gcode-preview-movepath-toggle {
+    position: absolute;
+    top: 0;
+    left: 6px;
+    z-index: 1;
+    margin-top: 0;
+    padding-top: 0;
 }
 </style>

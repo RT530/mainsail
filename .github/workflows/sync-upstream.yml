@@ -25,6 +25,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: develop
+          # SYNC_TOKEN is a PAT carrying the `workflow` scope. Without it the
+          # default GITHUB_TOKEN is used, which GitHub refuses to let push any
+          # upstream commit that touches .github/workflows/**.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Configure git identity
         run: |
@@ -42,4 +46,11 @@ jobs:
 
       - name: Push
         run: |
-          git push origin develop
+          if ! git push origin develop; then
+            echo "::error::Push failed. If the error mentions the workflows"
+            echo "::error::permission, upstream changed a file under"
+            echo "::error::.github/workflows/ and the default GITHUB_TOKEN cannot"
+            echo "::error::push it. Add a PAT with the workflow scope as the"
+            echo "::error::SYNC_TOKEN secret in this repository."
+            exit 1
+          fi

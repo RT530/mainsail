@@ -21,11 +21,18 @@
             </p>
             <template v-else>
                 <div class="gcode-preview-toolbar">
-                    <v-checkbox
-                        v-model="showMovePath"
-                        :label="$t('Panels.GcodePreviewPanel.ShowMovePath')"
-                        hide-details
-                        dense />
+                    <div class="gcode-preview-toggles">
+                        <v-checkbox
+                            v-model="showPrintPreview"
+                            :label="$t('Panels.GcodePreviewPanel.PrintPreview')"
+                            hide-details
+                            dense />
+                        <v-checkbox
+                            v-model="showMovePath"
+                            :label="$t('Panels.GcodePreviewPanel.ShowMovePath')"
+                            hide-details
+                            dense />
+                    </div>
                     <div class="gcode-preview-layer-label">
                         {{
                             $t('Panels.GcodePreviewPanel.Layer', {
@@ -38,6 +45,7 @@
                 <div class="gcode-preview-chart-wrap">
                     <gcode-preview-chart
                         :runs="currentLayerRuns"
+                        :show-remaining="showPrintPreview"
                         :travels="showMovePath ? currentLayerTravels : []"
                         :progress-offset="fileProgressOffset"
                         :tool-position="toolPositionXY"
@@ -58,6 +66,8 @@ import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
 import { GcodePreviewLayer, GcodePreviewPoint, GcodePreviewRun } from './GcodePreview/parser'
 import { generateDemoGcode } from './GcodePreview/demoGcode'
+import { buildDemoTimeline, offsetAtTime, timelineDuration } from './GcodePreview/demoTiming'
+import type { DemoTimelinePoint } from './GcodePreview/demoTiming'
 import { escapePath } from '@/plugins/helpers'
 import axios, { CancelTokenSource } from 'axios'
 import { mdiRefresh, mdiVideo2d } from '@mdi/js'
@@ -77,6 +87,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     error: string | null = null
     layers: GcodePreviewLayer[] = []
     loadedFilename: string | null = null
+    showPrintPreview = true
     showMovePath = false
 
     private worker: Worker | null = null
@@ -85,6 +96,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // ===== DEMO MODE (screenshot only) - remove before commit =====
     private demoTimer: number | null = null
     private demoFlatPoints: GcodePreviewPoint[] = []
+    private demoTimeline: DemoTimelinePoint[] = []
     private demoPointIndex = 0
     demoProgressOffset = 0
     demoToolPosition: [number, number] | null = null
@@ -93,11 +105,59 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return 'demo' in this.$route.query
     }
 
-    private loadDemoFile(): void {
+    // ?demo=1 uses the synthetic file; ?demo=<name.gcode> loads a real file from the
+    // printer instead, so the preview can be exercised against actual sliced output
+    get demoFilename(): string | null {
+        const value = this.$route.query.demo?.toString() ?? ''
+        if (value === '' || value === '1' || value === 'true') return null
+
+        return value
+    }
+
+    private async loadDemoFile(): Promise<void> {
         this.loading = true
         this.error = null
         this.layers = []
-        this.parseInWorker(generateDemoGcode(), 'demo_preview.gcode')
+        this.demoTimeline = []
+
+        const filename = this.demoFilename
+        if (filename === null) {
+            const text = generateDemoGcode()
+            this.demoTimeline = Object.freeze(buildDemoTimeline(text)) as DemoTimelinePoint[]
+            this.parseInWorker(text, 'demo_preview.gcode')
+            return
+        }
+
+        try {
+            const [file, estimatedSeconds] = await Promise.all([
+                axios.get<string>(this.apiUrl + '/server/files/' + escapePath('gcodes/' + filename), {
+                    responseType: 'text',
+                }),
+                this.fetchDemoEstimatedTime(filename),
+            ])
+
+            // run at the file's own print speed: per-move feedrates, scaled onto the
+            // slicer's estimate when the metadata gives us one
+            this.demoTimeline = Object.freeze(
+                buildDemoTimeline(file.data, estimatedSeconds)
+            ) as DemoTimelinePoint[]
+            this.parseInWorker(file.data, filename)
+        } catch {
+            this.error = this.$t('Panels.GcodePreviewPanel.LoadError').toString()
+            this.loading = false
+        }
+    }
+
+    private async fetchDemoEstimatedTime(filename: string): Promise<number | undefined> {
+        try {
+            const response = await axios.get(this.apiUrl + '/server/files/metadata', {
+                params: { filename },
+            })
+
+            return response.data?.result?.estimated_time ?? undefined
+        } catch {
+            return undefined
+        }
     }
 
     @Watch('layers')
@@ -106,19 +166,23 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     }
 
     private startDemoAnimation(): void {
-        this.demoFlatPoints = this.layers.flatMap((layer) => layer.runs.flat())
+        // frozen so Vue doesn't walk ~175k point objects installing reactivity on them
+        this.demoFlatPoints = Object.freeze(
+            this.layers.flatMap((layer) => layer.runs.flat())
+        ) as GcodePreviewPoint[]
         if (this.demoFlatPoints.length === 0) return
 
-        const maxOffset = this.demoFlatPoints[this.demoFlatPoints.length - 1].offset
-        const durationMs = 20000
+        const durationSec = timelineDuration(this.demoTimeline)
+        if (durationSec <= 0) return
+
         const startTime = Date.now()
 
         this.demoTimer = window.setInterval(() => {
-            const elapsed = Date.now() - startTime
-            const loopElapsed = elapsed % durationMs
-            if (loopElapsed < 100) this.demoPointIndex = 0
+            const elapsedSec = (Date.now() - startTime) / 1000
+            const loopSec = elapsedSec % durationSec
+            if (loopSec < 1) this.demoPointIndex = 0
 
-            const targetOffset = (loopElapsed / durationMs) * maxOffset
+            const targetOffset = offsetAtTime(this.demoTimeline, loopSec)
             this.demoProgressOffset = targetOffset
 
             while (
@@ -129,7 +193,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
             }
             const point = this.demoFlatPoints[this.demoPointIndex]
             this.demoToolPosition = [point.x, point.y]
-        }, 100)
+        }, 250)
     }
     // ===== END DEMO MODE =====
 
@@ -174,13 +238,15 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.layers[this.currentLayerIndex]?.travels ?? []
     }
 
+    // the synthetic demo is drawn for a generic 250x250 bed; a real file is sliced for
+    // this printer, so it gets the printer's actual bed
     get bedMin(): number[] {
-        if (this.demoMode) return [0, 0]
+        if (this.demoMode && this.demoFilename === null) return [0, 0]
         return this.$store.state.printer.toolhead?.axis_minimum ?? [0, 0]
     }
 
     get bedMax(): number[] {
-        if (this.demoMode) return [250, 250]
+        if (this.demoMode && this.demoFilename === null) return [250, 250]
         return this.$store.state.printer.toolhead?.axis_maximum ?? [200, 200]
     }
 
@@ -265,7 +331,10 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 
         worker.onmessage = (event: MessageEvent<GcodePreviewWorkerOutMessage>) => {
             if (event.data.type === 'result') {
-                this.layers = event.data.layers
+                // frozen: a sliced file is easily 100k+ points, and Vue would otherwise
+                // deep-walk every one of them installing reactivity we never need - the
+                // parsed result is replaced wholesale, never mutated in place
+                this.layers = Object.freeze(event.data.layers) as GcodePreviewLayer[]
                 this.loadedFilename = filename
             } else {
                 this.error = event.data.message
@@ -311,6 +380,12 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     justify-content: space-between;
     margin-bottom: 8px;
     flex: 0 0 auto;
+}
+
+.gcode-preview-toggles {
+    display: flex;
+    align-items: center;
+    gap: 16px;
 }
 
 .gcode-preview-toolbar ::v-deep .v-input--checkbox {

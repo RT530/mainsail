@@ -726,6 +726,7 @@
             "Layer": "Layer {current} / {total}",
             "LoadError": "Failed to load G-code file",
             "NoFile": "No G-code file loaded",
+            "PrintPreview": "Print preview",
             "ShowMovePath": "Show move path"
         },
         "KlippyStatePanel": {

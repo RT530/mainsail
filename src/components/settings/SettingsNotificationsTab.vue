@@ -36,6 +36,13 @@
                             :disabled="loading"
                             @change="onEnabledChanged" />
                     </settings-row>
+                    <v-divider class="my-2" />
+                    <settings-row
+                        :title="$t('Settings.NotificationsTab.Progress')"
+                        :sub-title="$t('Settings.NotificationsTab.ProgressDescription')"
+                        :mobile-second-row="true">
+                        <v-select v-model="progressInterval" :items="progressOptions" hide-details outlined dense />
+                    </settings-row>
                     <template v-if="enabled">
                         <v-divider class="my-2" />
                         <settings-row
@@ -43,20 +50,6 @@
                             :sub-title="$t('Settings.NotificationsTab.TestNotificationDescription')">
                             <v-btn small outlined @click="sendTestNotification">
                                 {{ $t('Settings.NotificationsTab.SendTest') }}
-                            </v-btn>
-                        </settings-row>
-                        <v-divider class="my-2" />
-                        <settings-row
-                            :title="$t('Settings.NotificationsTab.Subscription')"
-                            :sub-title="
-                                $t('Settings.NotificationsTab.SubscriptionDescription', { path: subscriptionPath })
-                            "
-                            :mobile-second-row="true">
-                            <v-btn small outlined class="mr-2" :loading="saving" @click="saveToPrinter">
-                                {{ $t('Settings.NotificationsTab.SaveToPrinter') }}
-                            </v-btn>
-                            <v-btn small outlined @click="copySubscription">
-                                {{ $t('Settings.NotificationsTab.Copy') }}
                             </v-btn>
                         </settings-row>
                     </template>
@@ -98,7 +91,6 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
     mdiBellRing = mdiBellRing
 
     loading = false
-    saving = false
     enabled = false
     subscription: WebPushSubscriptionJson | null = null
     deviceNameValue = ''
@@ -158,6 +150,26 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
 
     set vapidPublicKey(newVal: string) {
         this.$store.dispatch('gui/push/saveSetting', { name: 'vapidPublicKey', value: newVal.trim() })
+    }
+
+    get progressOptions() {
+        return [
+            { text: this.$t('Settings.NotificationsTab.ProgressEvery', { percent: 10 }), value: 10 },
+            { text: this.$t('Settings.NotificationsTab.ProgressEvery', { percent: 25 }), value: 25 },
+            { text: this.$t('Settings.NotificationsTab.ProgressEvery', { percent: 50 }), value: 50 },
+            { text: this.$t('Settings.NotificationsTab.ProgressComplete'), value: 100 },
+        ]
+    }
+
+    get progressInterval(): number {
+        return this.$store.state.gui.push?.progressInterval ?? 25
+    }
+
+    set progressInterval(newVal: number) {
+        this.$store.dispatch('gui/push/saveSetting', { name: 'progressInterval', value: newVal })
+        // the printer-side macro reads this from save_variables, so that
+        // progress notifications keep working with no browser open
+        this.$store.dispatch('printer/sendGcode', `SAVE_VARIABLE VARIABLE=notify_progress_interval VALUE=${newVal}`)
     }
 
     get subscriptionPath(): string {
@@ -232,21 +244,6 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
         })
     }
 
-    async copySubscription() {
-        if (this.subscription === null) {
-            this.$toast.error(this.$t('Settings.NotificationsTab.NoSubscription').toString())
-            return
-        }
-
-        const content = JSON.stringify({ [this.deviceName]: this.subscription }, null, 4)
-        try {
-            await navigator.clipboard.writeText(content)
-            this.$toast.success(this.$t('Settings.NotificationsTab.Copied').toString())
-        } catch {
-            this.$toast.error(this.$t('Settings.NotificationsTab.CopyFailed').toString())
-        }
-    }
-
     get configPath(): string {
         return this.subscriptionPath.replace(/^\/+/, '')
     }
@@ -292,7 +289,6 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
             return
         }
 
-        this.saving = true
         try {
             const subscriptions = await this.readSubscriptions()
             subscriptions[this.deviceName] = this.subscription
@@ -301,8 +297,6 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
         } catch (error: unknown) {
             window.console.error('saving the subscription failed:', error)
             this.$toast.error(this.$t('Settings.NotificationsTab.SaveFailed').toString())
-        } finally {
-            this.saving = false
         }
     }
 

@@ -39,7 +39,7 @@ export const isStandalone = (): boolean => {
 export const urlBase64ToUint8Array = (base64String: string): Uint8Array<ArrayBuffer> => {
     const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
-    const rawData = window.atob(base64)
+    const rawData = atob(base64)
 
     // backed by an explicit ArrayBuffer, as BufferSource does not accept the
     // SharedArrayBuffer that a plain Uint8Array may be typed with

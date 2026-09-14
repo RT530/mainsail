@@ -90,6 +90,11 @@ import { GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
 const PROGRESS_THROTTLE_MS = 500
 const GRID_SPACING_MM = 25
 
+// how far back from the file position to look for the point nearest the toolhead - big
+// enough to cover Klipper's lookahead queue, small enough that a path crossing its own
+// earlier track can't match something from the far side of the layer
+const TOOLHEAD_LOOKBACK_POINTS = 4000
+
 @Component
 export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     @Prop({ type: Array, required: true }) declare readonly runs: GcodePreviewRun[]
@@ -159,12 +164,46 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
         return this.splitByProgress(this.runs)
     }
 
+    // virtual_sdcard.file_position is where Klipper has *read* to, and it runs ahead of the
+    // nozzle by the whole lookahead queue - drawing to it puts the printed line visibly in
+    // front of the toolhead marker. Anchor the cut to the live position instead: walk back
+    // from the file position to the already-read point closest to where the head really is.
+    get effectiveProgressOffset(): number {
+        const fileOffset = this.throttledProgressOffset
+        const tool = this.toolPosition
+        if (!tool) return fileOffset
+
+        let bestOffset = -1
+        let bestDistance = Number.POSITIVE_INFINITY
+        let scanned = 0
+
+        for (let r = this.runs.length - 1; r >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; r--) {
+            const run = this.runs[r]
+            for (let i = run.length - 1; i >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; i--) {
+                const point = run[i]
+                if (point.offset > fileOffset) continue
+
+                scanned++
+                const dx = point.x - tool[0]
+                const dy = point.y - tool[1]
+                const distance = dx * dx + dy * dy
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    bestOffset = point.offset
+                }
+            }
+        }
+
+        return bestOffset === -1 ? fileOffset : bestOffset
+    }
+
     splitByProgress(runs: GcodePreviewRun[]): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
         const done: GcodePreviewRun[] = []
         const remaining: GcodePreviewRun[] = []
+        const progress = this.effectiveProgressOffset
 
         for (const run of runs) {
-            const splitIndex = run.findIndex((point) => point.offset > this.throttledProgressOffset)
+            const splitIndex = run.findIndex((point) => point.offset > progress)
 
             if (splitIndex === -1) {
                 done.push(run)

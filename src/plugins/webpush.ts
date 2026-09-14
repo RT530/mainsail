@@ -51,6 +51,81 @@ export const urlBase64ToUint8Array = (base64String: string): Uint8Array<ArrayBuf
     return output
 }
 
+export interface VapidKeypair {
+    /** base64url raw P-256 point, the form `subscribe()` and senders expect */
+    publicKey: string
+    /** PKCS#8 PEM, the form Apprise's `keyfile=` expects */
+    privateKeyPem: string
+}
+
+const bytesToBase64 = (bytes: Uint8Array): string => {
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i])
+    }
+
+    return btoa(binary)
+}
+
+const toBase64Url = (bytes: Uint8Array): string =>
+    bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+const toPem = (der: ArrayBuffer): string => {
+    const body = bytesToBase64(new Uint8Array(der))
+        .replace(/(.{64})/g, '$1\n')
+        .trimEnd()
+
+    return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`
+}
+
+/**
+ * Generates the VAPID key pair in the browser, so that enabling notifications
+ * needs no key generation script on the host. The private key is PKCS#8 PEM,
+ * which is what Apprise loads via `keyfile=`; the public key is the raw curve
+ * point both `subscribe()` and the sender derive their identity from.
+ */
+export const generateVapidKeypair = async (): Promise<VapidKeypair> => {
+    const keypair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+
+    const [rawPublicKey, pkcs8PrivateKey] = await Promise.all([
+        crypto.subtle.exportKey('raw', keypair.publicKey),
+        crypto.subtle.exportKey('pkcs8', keypair.privateKey),
+    ])
+
+    return {
+        publicKey: toBase64Url(new Uint8Array(rawPublicKey)),
+        privateKeyPem: toPem(pkcs8PrivateKey),
+    }
+}
+
+/**
+ * Recovers the public half of a VAPID key pair from its private key.
+ *
+ * WebCrypto cannot hand back a public key from an imported private one, but a
+ * P-256 private key exported as JWK carries the curve point in `x`/`y`, which
+ * is the uncompressed point with its leading 0x04 removed. This lets the key
+ * pair on the printer stay the single source of truth, with nothing about it
+ * duplicated into the settings.
+ */
+export const derivePublicKeyFromPem = async (pem: string): Promise<string> => {
+    const body = pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '')
+    const der = urlBase64ToUint8Array(body)
+
+    const privateKey = await crypto.subtle.importKey('pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, true, [
+        'sign',
+    ])
+
+    const jwk = await crypto.subtle.exportKey('jwk', privateKey)
+    if (!jwk.x || !jwk.y) throw new Error('private key carries no public point')
+
+    const point = new Uint8Array(65)
+    point[0] = 4
+    point.set(urlBase64ToUint8Array(jwk.x), 1)
+    point.set(urlBase64ToUint8Array(jwk.y), 33)
+
+    return toBase64Url(point)
+}
+
 export const getRegistration = async (): Promise<ServiceWorkerRegistration | null> => {
     if (!isServiceWorkerSupported()) return null
 

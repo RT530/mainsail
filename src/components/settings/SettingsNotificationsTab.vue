@@ -22,19 +22,6 @@
                     </settings-row>
                     <v-divider class="my-2" />
                     <settings-row
-                        :title="$t('Settings.NotificationsTab.PublicKey')"
-                        :sub-title="$t('Settings.NotificationsTab.PublicKeyDescription')"
-                        :mobile-second-row="true">
-                        <v-text-field
-                            v-model="vapidPublicKey"
-                            :placeholder="$t('Settings.NotificationsTab.PublicKeyPlaceholder')"
-                            :disabled="enabled || loading"
-                            hide-details
-                            outlined
-                            dense />
-                    </settings-row>
-                    <v-divider class="my-2" />
-                    <settings-row
                         :title="$t('Settings.NotificationsTab.Enable')"
                         :sub-title="enableDescription"
                         :loading="loading">
@@ -94,6 +81,8 @@ import axios from 'axios'
 import {
     getSubscription,
     isNotificationSupported,
+    derivePublicKeyFromPem,
+    generateVapidKeypair,
     isPushSupported,
     isStandalone,
     subscribe,
@@ -164,17 +153,7 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
     }
 
     get enableDescription() {
-        if (this.vapidPublicKey === '') return this.$t('Settings.NotificationsTab.NeedsPublicKey')
-
         return this.$t('Settings.NotificationsTab.EnableDescription')
-    }
-
-    get vapidPublicKey(): string {
-        return this.$store.state.gui.push?.vapidPublicKey ?? ''
-    }
-
-    set vapidPublicKey(newVal: string) {
-        this.$store.dispatch('gui/push/saveSetting', { name: 'vapidPublicKey', value: newVal.trim() })
     }
 
     /**
@@ -289,9 +268,14 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
             return
         }
 
-        if (this.vapidPublicKey === '') {
+        let vapidPublicKey: string
+        try {
+            vapidPublicKey = await this.ensureVapidPublicKey()
+        } catch (error: unknown) {
+            window.console.error('preparing the VAPID key pair failed:', error)
             this.enabled = false
-            this.$toast.error(this.$t('Settings.NotificationsTab.NeedsPublicKey').toString())
+            this.$toast.error(this.$t('Settings.NotificationsTab.KeygenFailed').toString())
+
             return
         }
 
@@ -304,7 +288,7 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
 
         this.loading = true
         try {
-            const subscription = await subscribe(this.vapidPublicKey)
+            const subscription = await subscribe(vapidPublicKey)
             this.subscription = toSubscriptionJson(subscription)
         } catch (error: unknown) {
             window.console.error('push subscribe failed:', error)
@@ -379,6 +363,66 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
 
             throw error
         }
+    }
+
+    get privateKeyPath(): string {
+        const directory = this.configPath.split('/').slice(0, -1).join('/')
+
+        return directory === '' ? 'vapid_private.pem' : `${directory}/vapid_private.pem`
+    }
+
+    /**
+     * Returns the public half of the printer's VAPID key pair, creating the pair
+     * on first use. The private key on the printer is the only copy that matters,
+     * so the public half is always derived from it rather than stored alongside --
+     * nothing can drift out of sync, and there is no setting to fill in.
+     */
+    async ensureVapidPublicKey(): Promise<string> {
+        const existing = await this.readPrivateKey()
+        if (existing !== null) return await derivePublicKeyFromPem(existing)
+
+        const keypair = await generateVapidKeypair()
+        await this.writePrivateKey(keypair.privateKeyPem)
+
+        return keypair.publicKey
+    }
+
+    /**
+     * Reads the private key from the config root. Missing is the normal first-run
+     * case and resolves to null; anything else is a real failure and is raised,
+     * so a transient error cannot silently overwrite a working key pair.
+     */
+    async readPrivateKey(): Promise<string | null> {
+        try {
+            const response = await axios.get(`${this.apiUrl}/server/files/config/${this.privateKeyPath}`, {
+                params: { date: Date.now() },
+                responseType: 'text',
+                transformResponse: [(data) => data],
+            })
+
+            return typeof response.data === 'string' && response.data.includes('PRIVATE KEY') ? response.data : null
+        } catch (error: unknown) {
+            if (axios.isAxiosError(error) && error.response?.status === 404) return null
+
+            throw error
+        }
+    }
+
+    /**
+     * Writes the VAPID private key beside the subscription file, where
+     * Moonraker's [notifier] can point Apprise at it with `keyfile=`.
+     */
+    async writePrivateKey(pem: string) {
+        const filename = this.privateKeyPath.split('/').pop() ?? 'vapid_private.pem'
+        const directory = this.privateKeyPath.split('/').slice(0, -1).join('/')
+
+        const formData = new FormData()
+        formData.append('file', new Blob([pem], { type: 'application/x-pem-file' }), filename)
+        formData.append('root', 'config')
+        formData.append('path', directory)
+        formData.append('checksum', sha256(pem))
+
+        await axios.post(`${this.apiUrl}/server/files/upload`, formData)
     }
 
     async writeSubscriptions(subscriptions: Record<string, WebPushSubscriptionJson>) {

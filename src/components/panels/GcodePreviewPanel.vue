@@ -28,14 +28,7 @@
                             hide-details
                             dense />
                     </div>
-                    <div class="gcode-preview-layer-label">
-                        {{
-                            $t('Panels.GcodePreviewPanel.Layer', {
-                                current: currentLayerIndex + 1,
-                                total: layers.length,
-                            })
-                        }}
-                    </div>
+                    <div class="gcode-preview-layer-label">{{ layerLabel }}</div>
                 </div>
                 <gcode-preview-chart
                     :runs="currentLayerRuns"
@@ -44,7 +37,19 @@
                     :progress-offset="fileProgressOffset"
                     :tool-position="toolPositionXY"
                     :bed-min="bedMin"
-                    :bed-max="bedMax" />
+                    :bed-max="bedMax"
+                    @click.native="showDialog = true" />
+                <gcode-preview-dialog
+                    v-model="showDialog"
+                    :runs="currentLayerRuns"
+                    :travels="showMovePath ? currentLayerTravels : []"
+                    :progress-offset="fileProgressOffset"
+                    :tool-position="toolPositionXY"
+                    :bed-min="bedMin"
+                    :bed-max="bedMax"
+                    :layer-label="layerLabel"
+                    :show-print-preview.sync="showPrintPreview"
+                    :show-move-path.sync="showMovePath" />
             </template>
         </v-card-text>
     </panel>
@@ -55,6 +60,7 @@ import { Component, Mixins, Watch } from 'vue-property-decorator'
 import BaseMixin from '../mixins/base'
 import Panel from '@/components/ui/Panel.vue'
 import GcodePreviewChart from '@/components/charts/GcodePreviewChart.vue'
+import GcodePreviewDialog from '@/components/dialogs/GcodePreviewDialog.vue'
 import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
 import { GcodePreviewLayer, GcodePreviewRun } from './GcodePreview/parser'
@@ -65,7 +71,7 @@ import { mdiRefresh, mdiVideo2d } from '@mdi/js'
 const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
 
 @Component({
-    components: { Panel, GcodePreviewChart },
+    components: { Panel, GcodePreviewChart, GcodePreviewDialog },
 })
 export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     mdiRefresh = mdiRefresh
@@ -77,6 +83,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     loadedFilename: string | null = null
     showPrintPreview = true
     showMovePath = false
+    showDialog = false
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
@@ -112,6 +119,13 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
             if (progress >= this.layerStartOffsets[i]) return i
         }
         return 0
+    }
+
+    get layerLabel(): string {
+        return this.$t('Panels.GcodePreviewPanel.Layer', {
+            current: this.currentLayerIndex + 1,
+            total: this.layers.length,
+        }).toString()
     }
 
     get currentLayerRuns(): GcodePreviewRun[] {
@@ -250,6 +264,11 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 <style scoped>
 .gcode-preview-content {
     padding: 10px;
+}
+
+/* the chart itself is the click target for the enlarged dialog */
+.gcode-preview-content ::v-deep .gcode-preview-svg {
+    cursor: pointer;
 }
 
 /* the whole row stays on one line at dashboard column width: nothing wraps, and the

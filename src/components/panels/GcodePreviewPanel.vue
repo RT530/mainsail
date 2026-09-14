@@ -89,13 +89,29 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     error: string | null = null
     layers: GcodePreviewLayer[] = []
     loadedFilename: string | null = null
-    showPrintPreview = true
-    showMovePath = false
     showDialog = false
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
     private loadCounter = 0
+
+    // both toggles persist through gui settings, so they survive a reload like the
+    // rest of the dashboard's per-panel preferences
+    get showPrintPreview(): boolean {
+        return this.$store.state.gui.gcodePreview?.showPrintPreview ?? true
+    }
+
+    set showPrintPreview(value: boolean) {
+        this.$store.dispatch('gui/saveSetting', { name: 'gcodePreview.showPrintPreview', value })
+    }
+
+    get showMovePath(): boolean {
+        return this.$store.state.gui.gcodePreview?.showMovePath ?? false
+    }
+
+    set showMovePath(value: boolean) {
+        this.$store.dispatch('gui/saveSetting', { name: 'gcodePreview.showMovePath', value })
+    }
 
     get sdCardFilePath(): string {
         return this.$store.state.printer.print_stats?.filename ?? ''

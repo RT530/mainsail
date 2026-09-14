@@ -280,18 +280,23 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     justify-content: center;
 }
 
+/* the whole row stays on one line at dashboard column width: nothing wraps, and the
+   labels shrink rather than pushing the layer badge onto a second line */
 .gcode-preview-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
     flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 8px;
 }
 
 .gcode-preview-toggles {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 8px;
+    min-width: 0;
 }
 
 .gcode-preview-toolbar ::v-deep .v-input--checkbox {
@@ -299,10 +304,25 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     padding-top: 0;
 }
 
+.gcode-preview-toolbar ::v-deep .v-label {
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.gcode-preview-toolbar ::v-deep .v-input--selection-controls__input {
+    margin-right: 4px;
+}
+
+.gcode-preview-toolbar ::v-deep .v-input--selection-controls__input .v-icon {
+    font-size: 18px;
+}
+
 .gcode-preview-layer-label {
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 0.75rem;
+    white-space: nowrap;
+    flex: 0 0 auto;
     background: rgba(0, 0, 0, 0.5);
     color: #fff;
 }

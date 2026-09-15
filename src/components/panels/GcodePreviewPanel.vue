@@ -39,7 +39,6 @@
                     :bed-min="bedMin"
                     :bed-max="bedMax"
                     :tool-on-layer="toolOnLayer"
-                    :show-live-travel="printerIsPrintingOnly"
                     @click.native="showDialog = true" />
                 <gcode-preview-dialog
                     v-model="showDialog"
@@ -50,7 +49,6 @@
                     :bed-min="bedMin"
                     :bed-max="bedMax"
                     :tool-on-layer="toolOnLayer"
-                    :show-live-travel="printerIsPrintingOnly"
                     :layer-label="layerLabel"
                     :show-print-preview.sync="showPrintPreview"
                     :show-move-path.sync="showMovePath" />

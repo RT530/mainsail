@@ -773,9 +773,18 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
             }
 
             const printerCfg = await this.readConfigText('printer.cfg')
-            if (!printerCfg.split('\n').some((line) => line.trim() === notifyCfgInclude)) {
-                const body = printerCfg.replace(/\s+$/, '')
-                const next = body === '' ? `${notifyCfgInclude}\n` : `${body}\n${notifyCfgInclude}\n`
+            const lines = printerCfg.split('\n')
+            if (!lines.some((line) => line.trim() === notifyCfgInclude)) {
+                // Everything below Klipper's SAVE_CONFIG marker belongs to its
+                // autosave block, so appending there corrupts the saved values
+                // -- a calibrated printer loses its PID settings and refuses to
+                // start. Go in above the marker, or at the end when none exists.
+                const marker = lines.findIndex((line) => line.startsWith('#*#') && line.includes('SAVE_CONFIG'))
+                const next =
+                    marker === -1
+                        ? `${printerCfg.replace(/\s+$/, '')}\n${notifyCfgInclude}\n`
+                        : [...lines.slice(0, marker), notifyCfgInclude, '', ...lines.slice(marker)].join('\n')
+
                 await this.writeConfigText('printer.cfg', next)
                 codeChanged = true
             }

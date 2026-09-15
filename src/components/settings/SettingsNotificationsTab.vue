@@ -9,60 +9,109 @@
                     </v-card-title>
                     <v-divider class="ml-3" />
                 </div>
-                <v-alert v-if="unavailableReason" dense text type="info" class="mb-0 mt-3">
-                    {{ unavailableReason }}
-                </v-alert>
-                <template v-else>
-                    <settings-row
-                        :title="$t('Settings.NotificationsTab.TestNotification')"
-                        :sub-title="$t('Settings.NotificationsTab.TestNotificationDescription')">
-                        <v-btn small outlined @click="sendTestNotification">
-                            {{ $t('Settings.NotificationsTab.SendTest') }}
-                        </v-btn>
-                    </settings-row>
-                    <v-divider class="my-2" />
-                    <settings-row
-                        :title="$t('Settings.NotificationsTab.Enable')"
-                        :sub-title="enableDescription"
-                        :loading="loading">
-                        <v-switch
-                            v-model="enabled"
-                            hide-details
-                            class="mt-0"
-                            :disabled="loading"
-                            @change="onEnabledChanged" />
-                    </settings-row>
-                    <template v-if="hasProgressMacro">
+                <template v-if="isPwa">
+                    <v-alert v-if="unavailableReason" dense text type="info" class="mb-0 mt-3">
+                        {{ unavailableReason }}
+                    </v-alert>
+                    <template v-else>
+                        <settings-row
+                            :title="$t('Settings.NotificationsTab.TestNotification')"
+                            :sub-title="$t('Settings.NotificationsTab.TestNotificationDescription')">
+                            <v-btn small outlined @click="sendTestNotification">
+                                {{ $t('Settings.NotificationsTab.SendTest') }}
+                            </v-btn>
+                        </settings-row>
                         <v-divider class="my-2" />
                         <settings-row
-                            :title="$t('Settings.NotificationsTab.Progress')"
-                            :sub-title="$t('Settings.NotificationsTab.ProgressDescription')"
-                            :mobile-second-row="true">
-                            <v-select v-model="progressInterval" :items="progressOptions" hide-details outlined dense />
+                            :title="$t('Settings.NotificationsTab.Enable')"
+                            :sub-title="enableDescription"
+                            :loading="loading">
+                            <v-switch
+                                v-model="enabled"
+                                hide-details
+                                class="mt-0"
+                                :disabled="loading"
+                                @change="onEnabledChanged" />
                         </settings-row>
-                    </template>
-                    <template v-if="hasRunoutMacro">
-                        <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.Runout') }}</h3>
-                        <p class="mb-3 text--secondary runout-hint">
-                            {{ $t('Settings.NotificationsTab.RunoutDescription') }}
-                        </p>
-                        <template v-if="availableRunoutSensors.length">
-                            <template v-for="(sensor, index) in availableRunoutSensors">
-                                <v-divider v-if="index" :key="'runout_divider_' + sensor" class="my-2" />
-                                <settings-row :key="sensor" :title="convertName(sensor)" :dynamic-slot-width="true">
-                                    <v-switch
-                                        :input-value="isRunoutSensorEnabled(sensor)"
-                                        hide-details
-                                        class="mt-0"
-                                        @change="setRunoutSensor(sensor, $event)" />
-                                </settings-row>
-                            </template>
+                        <template v-if="hasProgressMacro">
+                            <v-divider class="my-2" />
+                            <settings-row
+                                :title="$t('Settings.NotificationsTab.Progress')"
+                                :sub-title="$t('Settings.NotificationsTab.ProgressDescription')"
+                                :mobile-second-row="true">
+                                <v-select
+                                    v-model="progressInterval"
+                                    :items="progressOptions"
+                                    hide-details
+                                    outlined
+                                    dense />
+                            </settings-row>
                         </template>
-                        <p v-else class="mb-0 text-center font-italic">
-                            {{ $t('Settings.NotificationsTab.RunoutNoSensors') }}
-                        </p>
+                        <template v-if="hasRunoutMacro">
+                            <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.Runout') }}</h3>
+                            <p class="mb-3 text--secondary runout-hint">
+                                {{ $t('Settings.NotificationsTab.RunoutDescription') }}
+                            </p>
+                            <template v-if="availableRunoutSensors.length">
+                                <template v-for="(sensor, index) in availableRunoutSensors">
+                                    <v-divider v-if="index" :key="'runout_divider_' + sensor" class="my-2" />
+                                    <settings-row :key="sensor" :title="convertName(sensor)" :dynamic-slot-width="true">
+                                        <v-switch
+                                            :input-value="isRunoutSensorEnabled(sensor)"
+                                            hide-details
+                                            class="mt-0"
+                                            @change="setRunoutSensor(sensor, $event)" />
+                                    </settings-row>
+                                </template>
+                            </template>
+                            <p v-else class="mb-0 text-center font-italic">
+                                {{ $t('Settings.NotificationsTab.RunoutNoSensors') }}
+                            </p>
+                        </template>
                     </template>
                 </template>
+                <v-alert v-else dense text type="info" class="mb-0 mt-3">
+                    {{ $t('Settings.NotificationsTab.EnableFromApp') }}
+                </v-alert>
+
+                <!-- Connected devices: shown on every device type, so any
+                     browser can review the list and drop a stale entry, not
+                     only the phone that can subscribe. -->
+                <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.ConnectedDevices') }}</h3>
+                <p class="mb-3 text--secondary devices-hint">
+                    {{ $t('Settings.NotificationsTab.ConnectedDevicesDescription') }}
+                </p>
+                <p v-if="devicesLoading" class="mb-0 text-center font-italic">
+                    {{ $t('Settings.NotificationsTab.DevicesLoading') }}
+                </p>
+                <template v-else-if="connectedDevices.length">
+                    <template v-for="(device, index) in connectedDevices">
+                        <v-divider v-if="index" :key="'device_divider_' + device.name" class="my-2" />
+                        <settings-row
+                            :key="device.name"
+                            :title="device.name"
+                            :sub-title="device.service"
+                            :dynamic-slot-width="true">
+                            <div class="d-flex align-center justify-end">
+                                <v-chip v-if="device.current" x-small color="primary" outlined class="mr-3">
+                                    {{ $t('Settings.NotificationsTab.ThisDevice') }}
+                                </v-chip>
+                                <v-btn
+                                    small
+                                    outlined
+                                    color="error"
+                                    :loading="disconnecting === device.name"
+                                    :disabled="disconnecting !== ''"
+                                    @click="disconnectDevice(device.name)">
+                                    {{ $t('Settings.NotificationsTab.Disconnect') }}
+                                </v-btn>
+                            </div>
+                        </settings-row>
+                    </template>
+                </template>
+                <p v-else class="mb-0 text-center font-italic">
+                    {{ $t('Settings.NotificationsTab.NoDevices') }}
+                </p>
             </v-card-text>
         </v-card>
     </div>
@@ -108,6 +157,9 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
     enabled = false
     subscription: WebPushSubscriptionJson | null = null
     deviceNameValue = ''
+    connectedDevices: { name: string; endpoint: string; service: string; current: boolean }[] = []
+    devicesLoading = true
+    disconnecting = ''
 
     async mounted() {
         const stored = localStorage.getItem(deviceNameStorageKey)
@@ -117,6 +169,7 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
         else this.deviceNameValue = stored
 
         await this.refreshSubscription()
+        await this.refreshDevices()
     }
 
     /**
@@ -141,6 +194,15 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
      * Push is unavailable rather than broken in a few normal situations, each of
      * which needs a different hint to the user.
      */
+    /**
+     * True only in an installed PWA. The subscribe controls are shown here alone,
+     * since a plain browser tab is not what receives the notifications; the
+     * connected-device list below stays visible everywhere.
+     */
+    get isPwa(): boolean {
+        return isStandalone()
+    }
+
     get unavailableReason() {
         if (!window.isSecureContext) return this.$t('Settings.NotificationsTab.NeedsSecureContext')
 
@@ -453,6 +515,86 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
         subscriptions[this.deviceName] = this.subscription
         await this.writeSubscriptions(subscriptions)
         this.$toast.success(this.$t('Settings.NotificationsTab.Saved', { path: this.configPath }).toString())
+        await this.refreshDevices()
+    }
+
+    /**
+     * Reads every subscribed device from the printer for display. Runs on any
+     * device type -- it only reads the config file and needs no Push API -- so
+     * the list can be reviewed and tidied from a desktop too.
+     */
+    async refreshDevices() {
+        this.devicesLoading = true
+        try {
+            const subscriptions = await this.readSubscriptions()
+            this.connectedDevices = Object.entries(subscriptions)
+                .map(([name, sub]) => ({
+                    name,
+                    endpoint: sub.endpoint,
+                    service: this.serviceLabel(sub.endpoint),
+                    current: this.subscription?.endpoint === sub.endpoint,
+                }))
+                .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+        } catch (error: unknown) {
+            window.console.error('reading the device list failed:', error)
+            this.$toast.error(this.$t('Settings.NotificationsTab.DevicesReadFailed').toString())
+        } finally {
+            this.devicesLoading = false
+        }
+    }
+
+    /**
+     * Names the push service behind an endpoint, so a row reads 'Apple (Safari)'
+     * rather than an opaque URL. Falls back to the host, then to a generic label.
+     */
+    serviceLabel(endpoint: string): string {
+        let host: string
+        try {
+            host = new URL(endpoint).host
+        } catch {
+            return this.$t('Settings.NotificationsTab.ServiceGeneric').toString()
+        }
+
+        if (host.includes('apple')) return 'Apple (Safari)'
+        if (host.includes('mozilla')) return 'Mozilla (Firefox)'
+        if (host.includes('windows') || host.includes('microsoft')) return 'Microsoft (Edge)'
+        if (host.includes('googleapis') || host.includes('fcm')) return 'Google (Chrome)'
+
+        return host
+    }
+
+    /**
+     * Removes one device from the subscription file. If it is the browser you are
+     * using, the local push subscription is torn down too so the two stay in step.
+     */
+    async disconnectDevice(name: string) {
+        this.disconnecting = name
+        try {
+            const subscriptions = await this.readSubscriptions()
+            const wasCurrent = subscriptions[name]?.endpoint === this.subscription?.endpoint
+            if (name in subscriptions) {
+                delete subscriptions[name]
+                await this.writeSubscriptions(subscriptions)
+            }
+
+            if (wasCurrent && this.subscription !== null) {
+                try {
+                    await unsubscribe()
+                } catch (error: unknown) {
+                    window.console.error('unsubscribing this device failed:', error)
+                }
+                this.subscription = null
+                this.enabled = false
+            }
+
+            this.$toast.success(this.$t('Settings.NotificationsTab.Disconnected', { name }).toString())
+        } catch (error: unknown) {
+            window.console.error('disconnecting the device failed:', error)
+            this.$toast.error(this.$t('Settings.NotificationsTab.DisconnectFailed').toString())
+        } finally {
+            this.disconnecting = ''
+            await this.refreshDevices()
+        }
     }
 
     /**
@@ -468,13 +610,16 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
             await this.writeSubscriptions(subscriptions)
         } catch (error: unknown) {
             window.console.error('removing the subscription failed:', error)
+        } finally {
+            await this.refreshDevices()
         }
     }
 }
 </script>
 
 <style scoped>
-.runout-hint {
+.runout-hint,
+.devices-hint {
     font-size: 0.8em;
     line-height: 1.3;
 }

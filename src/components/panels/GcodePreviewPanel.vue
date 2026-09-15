@@ -184,18 +184,45 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 
     @Watch('sdCardFilePath')
     sdCardFilePathChanged(newVal: string): void {
-        if (newVal === '') return
+        if (newVal === '' || !this.printerIsPrinting) return
 
         this.loadFile()
     }
 
+    // print_stats.filename survives the end of a job, so without this the panel keeps
+    // showing the finished file's toolpath - and reloads it on mount - until the next
+    // print starts. A job that stops for any reason clears the preview instead.
+    @Watch('printerIsPrinting')
+    printerIsPrintingChanged(isPrinting: boolean): void {
+        if (isPrinting) {
+            if (this.sdCardFilePath) this.loadFile()
+            return
+        }
+
+        this.clearPreview()
+    }
+
     mounted(): void {
-        if (this.sdCardFilePath) this.loadFile()
+        if (this.printerIsPrinting && this.sdCardFilePath) this.loadFile()
     }
 
     beforeDestroy(): void {
         this.cancelTokenSource?.cancel('component destroyed')
         this.worker?.terminate()
+    }
+
+    private clearPreview(): void {
+        // bump the load id so an in-flight download or worker result can't repopulate it
+        this.loadCounter++
+        this.cancelTokenSource?.cancel('print ended')
+        this.worker?.terminate()
+        this.worker = null
+
+        this.layers = []
+        this.loadedFilename = null
+        this.error = null
+        this.loading = false
+        this.showDialog = false
     }
 
     async loadFile(force = false): Promise<void> {

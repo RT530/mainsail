@@ -84,7 +84,7 @@ import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
 import BaseMixin from '@/components/mixins/base'
 import ThemeMixin from '@/components/mixins/theme'
 import { defaultPrimaryColor } from '@/store/variables'
-import { distanceSqToSegment, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
+import { closestPointOnSegment, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
 
 const GRID_SPACING_MM = 25
 
@@ -213,7 +213,7 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
                 }
 
                 scanned++
-                if (distanceSqToSegment(tool, start, run[i + 1]) <= toleranceSq) bestOffset = start.offset
+                if (closestPointOnSegment(tool, start, run[i + 1]).distanceSq <= toleranceSq) bestOffset = start.offset
             }
         }
 
@@ -248,7 +248,7 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
             // a long straight move is the far end of the segment, well ahead of the head
             const doneRun = run.slice(0, splitIndex)
             if (anchor && !anchored) {
-                doneRun.push({ x: anchor[0], y: anchor[1], offset: progress })
+                doneRun.push({ x: anchor[0], y: anchor[1], z: run[splitIndex - 1].z, offset: progress })
                 anchored = true
             }
             done.push(doneRun)

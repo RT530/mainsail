@@ -749,16 +749,21 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
     async ensureKlipperMacros() {
         try {
             const printer = this.$store.state.printer ?? {}
-            const ours = 'gcode_macro _NOTIFY_SETTINGS' in printer
-            const legacy = !ours && 'gcode_macro _NOTIFY_PROGRESS_VARS' in printer
-            if (legacy) {
+            const loaded = 'gcode_macro _NOTIFY_SETTINGS' in printer || 'gcode_macro _NOTIFY_PROGRESS_VARS' in printer
+            const existing = await this.readConfigText(notifyCfgPath)
+
+            // The macros are live but not from the file this writes, so another
+            // copy is installed -- shipped with mainsail-config, or placed by
+            // hand. Adding ours too would give Klipper duplicate [delayed_gcode]
+            // sections, which fails its config load outright, so stand down and
+            // let whoever owns that copy keep it.
+            if (loaded && existing === '') {
                 this.$toast.warning(this.$t('Settings.NotificationsTab.MacrosLegacyInstall').toString())
 
                 return
             }
 
             const wanted = buildNotifyCfg(this.progressInterval, this.runoutSensors)
-            const existing = await this.readConfigText(notifyCfgPath)
             let codeChanged = false
 
             if (wanted !== existing) {

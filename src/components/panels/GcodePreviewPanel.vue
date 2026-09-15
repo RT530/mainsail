@@ -38,6 +38,8 @@
                     :tool-position="toolPositionXY"
                     :bed-min="bedMin"
                     :bed-max="bedMax"
+                    :tool-on-layer="toolOnLayer"
+                    :show-live-travel="printerIsPrintingOnly"
                     @click.native="showDialog = true" />
                 <gcode-preview-dialog
                     v-model="showDialog"
@@ -47,6 +49,8 @@
                     :tool-position="toolPositionXY"
                     :bed-min="bedMin"
                     :bed-max="bedMax"
+                    :tool-on-layer="toolOnLayer"
+                    :show-live-travel="printerIsPrintingOnly"
                     :layer-label="layerLabel"
                     :show-print-preview.sync="showPrintPreview"
                     :show-move-path.sync="showMovePath" />
@@ -63,7 +67,7 @@ import GcodePreviewChart from '@/components/charts/GcodePreviewChart.vue'
 import GcodePreviewDialog from '@/components/dialogs/GcodePreviewDialog.vue'
 import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
-import { GcodePreviewLayer, GcodePreviewRun } from './GcodePreview/parser'
+import { distanceSqToSegment, GcodePreviewLayer, GcodePreviewRun } from './GcodePreview/parser'
 import { escapePath } from '@/plugins/helpers'
 import axios, { CancelTokenSource } from 'axios'
 import { mdiRefresh, mdiVideo2d } from '@mdi/js'
@@ -74,6 +78,12 @@ const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
 // Tight on purpose: a z-hop lifts the nozzle clear of every layer's Z, and during one we
 // keep the last matched layer rather than guessing.
 const LIVE_LAYER_Z_TOLERANCE_MM = 0.02
+
+// a candidate layer other than the current one also has to have the nozzle on one of its
+// already-read printed segments - the same on-path tolerance the chart uses. Z alone isn't
+// enough: a 1 mm z-hop on 0.1 mm layers lands exactly on another layer's Z.
+const LAYER_XY_TOLERANCE_MM = 2
+const LAYER_XY_SCAN_POINTS = 4000
 
 @Component({
     components: { Panel, GcodePreviewChart, GcodePreviewDialog },
@@ -153,14 +163,33 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.livePosition[2] - (this.gcodeOffset[2] ?? 0)
     }
 
-    // highest already-read layer whose Z the nozzle is sitting on; -1 mid z-hop
+    // highest already-read layer whose Z the nozzle is sitting on; -1 mid z-hop. Switching
+    // to a *different* layer also needs the nozzle on one of that layer's printed segments,
+    // so a lift that happens to land on another layer's Z doesn't flip the view
     findLayerAtZ(z: number): number {
         const readLimit = this.fileProgressOffset
+        const tool = this.toolPositionXY
         for (let i = this.layers.length - 1; i >= 0; i--) {
             if (this.layerStartOffsets[i] > readLimit) continue
-            if (Math.abs(this.layers[i].z - z) <= LIVE_LAYER_Z_TOLERANCE_MM) return i
+            if (Math.abs(this.layers[i].z - z) > LIVE_LAYER_Z_TOLERANCE_MM) continue
+            if (i === this.liveLayerIndex || this.isOnLayerPath(this.layers[i], tool, readLimit)) return i
         }
         return -1
+    }
+
+    isOnLayerPath(layer: GcodePreviewLayer, tool: [number, number] | null, readLimit: number): boolean {
+        if (!tool) return false
+
+        const toleranceSq = LAYER_XY_TOLERANCE_MM * LAYER_XY_TOLERANCE_MM
+        let scanned = 0
+        for (const run of layer.runs) {
+            for (let i = 0; i + 1 < run.length && scanned < LAYER_XY_SCAN_POINTS; i++, scanned++) {
+                // runs are in file order, so past the read limit nothing later is printed yet
+                if (run[i].offset > readLimit) return false
+                if (distanceSqToSegment(tool, run[i], run[i + 1]) <= toleranceSq) return true
+            }
+        }
+        return false
     }
 
     get layerLabel(): string {
@@ -198,6 +227,16 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         if (!this.printerIsPrinting) return null
 
         return [this.livePosition[0] - this.gcodeOffset[0], this.livePosition[1] - this.gcodeOffset[1]]
+    }
+
+    // the nozzle is at the drawn layer's Z, i.e. not lifted for a travel - without this the
+    // chart would treat XY nearness to a printed segment as being on it
+    get toolOnLayer(): boolean {
+        const z = this.liveZ
+        const layer = this.layers[this.currentLayerIndex]
+        if (z === null || !layer) return false
+
+        return Math.abs(layer.z - z) <= LIVE_LAYER_Z_TOLERANCE_MM
     }
 
     @Watch('sdCardFilePath')

@@ -78,6 +78,20 @@ function pushPointDecimated(run: GcodePreviewRun, point: GcodePreviewPoint, minD
     run.push(point)
 }
 
+/** squared distance from a point to the segment a-b, shared by the chart and the panel */
+export function distanceSqToSegment(point: [number, number], a: GcodePreviewPoint, b: GcodePreviewPoint): number {
+    const abx = b.x - a.x
+    const aby = b.y - a.y
+    const apx = point[0] - a.x
+    const apy = point[1] - a.y
+    const lengthSq = abx * abx + aby * aby
+    const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / lengthSq))
+    const dx = apx - t * abx
+    const dy = apy - t * aby
+
+    return dx * dx + dy * dy
+}
+
 /**
  * @param bedSizeMm largest bed axis span, used to scale the decimation threshold
  */

@@ -212,15 +212,14 @@ export default class TheSettingsMenu extends Mixins(BaseMixin) {
             },
         ]
 
-        // push notifications are only offered on mobile, where the installed
-        // PWA is the thing that receives them
-        if (this.isMobile) {
-            tabs.push({
-                icon: mdiBellRing,
-                name: 'notifications',
-                title: this.$t('Settings.NotificationsTab.Notifications'),
-            })
-        }
+        // Shown on every device type: the subscribe controls inside still gate
+        // themselves to a push-capable browser, but the connected-device list is
+        // useful anywhere -- a desktop can drop a stale phone entry.
+        tabs.push({
+            icon: mdiBellRing,
+            name: 'notifications',
+            title: this.$t('Settings.NotificationsTab.Notifications'),
+        })
 
         if (this.moonrakerComponents.includes('timelapse')) {
             tabs.push({

@@ -224,26 +224,34 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
         }
         if (!this.toolOnLayer) return held
 
+        // progress through a layer only ever moves forward, so the segment the nozzle is on
+        // is the *earliest* one at or after the last cut that it's within tolerance of - not
+        // the nearest overall. Neighbouring perimeter lines sit well inside the tolerance,
+        // and picking one printed earlier would throw the cut backwards for a frame.
+        const floor = held.offset
+        const toleranceSq = ON_PATH_TOLERANCE_MM * ON_PATH_TOLERANCE_MM
         let bestOffset = -1
-        let bestDistance = Number.POSITIVE_INFINITY
         let scanned = 0
+        let belowFloor = false
 
-        for (let r = this.runs.length - 1; r >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; r--) {
+        // the scan runs from the read position backwards, so offsets only decrease: the last
+        // hit is the earliest, and once below the floor nothing further back can qualify
+        for (let r = this.runs.length - 1; r >= 0 && !belowFloor && scanned < TOOLHEAD_LOOKBACK_POINTS; r--) {
             const run = this.runs[r]
             for (let i = run.length - 2; i >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; i--) {
                 const start = run[i]
                 if (start.offset > fileOffset) continue
+                if (start.offset < floor) {
+                    belowFloor = true
+                    break
+                }
 
                 scanned++
-                const distance = distanceSqToSegment(tool, start, run[i + 1])
-                if (distance < bestDistance) {
-                    bestDistance = distance
-                    bestOffset = start.offset
-                }
+                if (distanceSqToSegment(tool, start, run[i + 1]) <= toleranceSq) bestOffset = start.offset
             }
         }
 
-        if (bestOffset === -1 || bestDistance > ON_PATH_TOLERANCE_MM * ON_PATH_TOLERANCE_MM) return held
+        if (bestOffset === -1) return held
 
         return { offset: bestOffset, anchor: tool }
     }

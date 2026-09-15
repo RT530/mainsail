@@ -96,6 +96,11 @@ const LAYER_XY_SCAN_POINTS = 4000
 // passes within tolerance of printed lines, and only this tells it apart from extrusion.
 const EXTRUDER_MOVING_MM_S = 0.01
 
+// motion_report updates that may disagree with the learned Z offset before it's taken
+// again - about a second. A scarf seam ramps Z down by up to a layer *while extruding*, so
+// a lock taken mid-seam would make every normal sample on the layer look like a lift.
+const Z_OFFSET_RELOCK_SAMPLES = 4
+
 @Component({
     components: { Panel, GcodePreviewChart, GcodePreviewDialog },
 })
@@ -115,6 +120,8 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // learned live Z - layer Z while on a printed segment: bed mesh plus whatever else
     // Klipper adds that the gcode doesn't know about. null until the first on-path sample
     zOffsetEstimate: number | null = null
+    // consecutive on-path samples a lift above the estimate that no layer switch explained
+    zOffsetMismatches = 0
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
@@ -196,7 +203,9 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // the already-read layer whose Z the nozzle is sitting on (mesh offset removed); -1 while
     // lifted, or before the offset is known. Switching to a *different* layer also needs the
     // nozzle on one of that layer's printed segments, so a lift that happens to land on
-    // another layer's Z doesn't flip the view
+    // another layer's Z doesn't flip the view - and it's never an *earlier* layer: the file
+    // only moves forward, and a Z below the current layer while extruding is a scarf seam
+    // ramping down, not a return to the layer underneath
     findLayerAtZ(z: number): number {
         if (this.zOffsetEstimate === null) return -1
 
@@ -214,6 +223,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         }
         if (nearest === -1 || nearestDistance > this.liftThreshold) return -1
         if (nearest === this.liveLayerIndex) return nearest
+        if (this.liveLayerIndex !== null && nearest < this.liveLayerIndex) return -1
 
         if (!this.toolExtruding) return -1
 
@@ -277,13 +287,15 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     }
 
     // the nozzle is at the drawn layer's Z, i.e. not lifted for a travel - without this the
-    // chart would treat XY nearness to a printed segment as being on it
+    // chart would treat XY nearness to a printed segment as being on it. Below the layer
+    // still counts: a scarf seam extrudes while ramping down to the previous layer's height
     get toolOnLayer(): boolean {
         const z = this.liveZ
         const layer = this.layers[this.currentLayerIndex]
         if (z === null || !layer || this.zOffsetEstimate === null || !this.toolExtruding) return false
 
-        return Math.abs(z - layer.z - this.zOffsetEstimate) <= this.liftThreshold
+        const lift = z - layer.z - this.zOffsetEstimate
+        return lift <= this.liftThreshold && lift >= -(this.layerSpacing + this.liftThreshold)
     }
 
     @Watch('sdCardFilePath')
@@ -293,37 +305,53 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.loadFile()
     }
 
-    // print_stats.filename survives the end of a job, so without this the panel keeps
-    // showing the finished file's toolpath - and reloads it on mount - until the next
-    // print starts. A job that stops for any reason clears the preview instead.
-    @Watch('liveZ')
-    liveZChanged(z: number | null): void {
+    // every motion_report update, not only Z changes: the nozzle is lowered onto the next
+    // layer *before* it starts extruding there, and a layer switch is only taken while
+    // extruding - keyed to Z alone it would wait for the first mesh wobble on the new layer
+    @Watch('livePosition')
+    livePositionChanged(): void {
+        const z = this.liveZ
         if (z === null) {
             this.liveLayerIndex = null
             this.zOffsetEstimate = null
+            this.zOffsetMismatches = 0
             return
         }
 
-        this.learnZOffset(z)
+        // switch first, so the sample is learned against the layer it was printed on
         const index = this.findLayerAtZ(z)
-        if (index !== -1) this.liveLayerIndex = index
+        if (index !== -1 && index !== this.liveLayerIndex) {
+            this.liveLayerIndex = index
+            this.zOffsetMismatches = 0
+        }
+        this.learnZOffset(z)
     }
 
     // while the nozzle is on a printed segment of the drawn layer, live Z - layer Z is the
-    // mesh plus whatever else Klipper adds. Track it, but never learn from a rise bigger
-    // than the lift threshold - that's a z-hop, not the bed. A wrong first sample (taken
-    // mid-hop) corrects itself on the next on-path one, since a drop is always accepted.
+    // mesh plus whatever else Klipper adds. Once locked, only follow changes within the lift
+    // threshold: a rise past it is a lift or the next layer, a drop past it is a scarf seam
+    // ramping down while extruding, and learning from either would put the whole layer out
+    // of reach. A rise that persists with no layer switch to explain it means the lock
+    // itself was taken mid-seam, so it's taken again.
     learnZOffset(z: number): void {
         const layer = this.layers[this.currentLayerIndex]
         if (!layer || !this.toolExtruding) return
         if (!this.isOnLayerPath(layer, this.toolPositionXY, this.fileProgressOffset)) return
 
         const observed = z - layer.z
-        if (this.zOffsetEstimate !== null && observed - this.zOffsetEstimate > this.liftThreshold) return
+        if (this.zOffsetEstimate !== null) {
+            const change = observed - this.zOffsetEstimate
+            if (change < -this.liftThreshold) return
+            if (change > this.liftThreshold && ++this.zOffsetMismatches < Z_OFFSET_RELOCK_SAMPLES) return
+        }
 
         this.zOffsetEstimate = observed
+        this.zOffsetMismatches = 0
     }
 
+    // print_stats.filename survives the end of a job, so without this the panel keeps
+    // showing the finished file's toolpath - and reloads it on mount - until the next
+    // print starts. A job that stops for any reason clears the preview instead.
     @Watch('printerIsPrinting')
     printerIsPrintingChanged(isPrinting: boolean): void {
         if (isPrinting) {
@@ -353,6 +381,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.layers = []
         this.liveLayerIndex = null
         this.zOffsetEstimate = null
+        this.zOffsetMismatches = 0
         this.loadedFilename = null
         this.error = null
         this.loading = false
@@ -373,6 +402,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.layers = []
         this.liveLayerIndex = null
         this.zOffsetEstimate = null
+        this.zOffsetMismatches = 0
 
         // cancelling can't call back an already-fulfilled request, so every load carries
         // an id and anything that isn't the newest one is dropped on arrival

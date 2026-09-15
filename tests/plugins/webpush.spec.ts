@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     derivePublicKeyFromPem,
     generateVapidKeypair,
+    replaceConfigSection,
     toSubscriptionJson,
     urlBase64ToUint8Array,
 } from '@/plugins/webpush'
@@ -67,6 +68,56 @@ describe('webpush', () => {
 
         it('rejects something that is not a private key', async () => {
             await expect(derivePublicKeyFromPem('not a pem')).rejects.toThrow()
+        })
+    })
+
+    describe('replaceConfigSection', () => {
+        const header = '[notifier webpush]'
+        const section = `${header}\nurl: vapid://a@b.test/phone\nevents: complete`
+
+        it('replaces a section in place and leaves every other byte alone', () => {
+            const before = '[server]\nhost: 0.0.0.0\n\n'
+            const after = '\n[authorization]\ntrusted_clients:\n'
+            const content = `${before}${header}\nurl: old\nevents: error\n${after}`
+
+            const result = replaceConfigSection(content, header, section)
+
+            expect(result).toContain('url: vapid://a@b.test/phone')
+            expect(result).not.toContain('url: old')
+            // the surrounding config is untouched, blank separator included
+            expect(result.startsWith(before)).toBe(true)
+            expect(result.endsWith(after)).toBe(true)
+        })
+
+        it('appends the section when it is absent, with one blank separator', () => {
+            expect(replaceConfigSection('[server]\nhost: 0.0.0.0\n', header, section)).toBe(
+                `[server]\nhost: 0.0.0.0\n\n${section}\n`
+            )
+
+            // a file with no trailing newline gets the same treatment
+            expect(replaceConfigSection('[server]\nhost: 0.0.0.0', header, section)).toBe(
+                `[server]\nhost: 0.0.0.0\n\n${section}\n`
+            )
+
+            expect(replaceConfigSection('', header, section)).toBe(`${section}\n`)
+        })
+
+        it('removes the section, and its separating blank, when given null', () => {
+            const content = `[server]\nhost: 0.0.0.0\n\n${header}\nurl: old\n\n[authorization]\ncors_domains:\n`
+
+            expect(replaceConfigSection(content, header, null)).toBe(
+                '[server]\nhost: 0.0.0.0\n\n[authorization]\ncors_domains:\n'
+            )
+
+            // nothing to remove is a no-op, so the caller writes nothing
+            const untouched = '[server]\nhost: 0.0.0.0\n'
+            expect(replaceConfigSection(untouched, header, null)).toBe(untouched)
+        })
+
+        it('matches the header exactly, so a similarly named section survives', () => {
+            const content = `[notifier webpush2]\nurl: other\n`
+
+            expect(replaceConfigSection(content, header, section)).toBe(`${content}\n${section}\n`)
         })
     })
 

@@ -65,7 +65,7 @@ import GcodePreviewChart from '@/components/charts/GcodePreviewChart.vue'
 import GcodePreviewDialog from '@/components/dialogs/GcodePreviewDialog.vue'
 import GcodePreviewWorker from './GcodePreview/gcodePreview.worker?worker'
 import type { GcodePreviewWorkerOutMessage } from './GcodePreview/gcodePreview.worker'
-import { distanceSqToSegment, GcodePreviewLayer, GcodePreviewRun } from './GcodePreview/parser'
+import { closestPointOnSegment, GcodePreviewLayer, GcodePreviewRun } from './GcodePreview/parser'
 import { escapePath } from '@/plugins/helpers'
 import axios, { CancelTokenSource } from 'axios'
 import { mdiRefresh, mdiVideo2d } from '@mdi/js'
@@ -73,15 +73,16 @@ import { mdiRefresh, mdiVideo2d } from '@mdi/js'
 const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
 
 // live Z includes bed-mesh compensation (up to a full layer height on this bed), so "at
-// the layer's Z" can't be an absolute tolerance. The offset live Z - layer Z is learned
+// the path's Z" can't be an absolute tolerance. The offset live Z - segment Z is learned
 // while the nozzle is on a printed segment, and a z-hop is a rise past this fraction of
 // the layer spacing above that learned offset. Mesh drift between samples is far smaller.
 const LIFT_FRACTION_OF_LAYER = 0.5
 const DEFAULT_LAYER_SPACING_MM = 0.2
 
-// a candidate layer other than the current one also has to have the nozzle on one of its
-// already-read printed segments - the same on-path tolerance the chart uses. Z alone isn't
-// enough: a 1 mm z-hop on 0.1 mm layers lands exactly on another layer's Z.
+// the nozzle is on a layer when an already-read printed segment of it is within this XY
+// tolerance (the same one the chart uses) *and* at its Z. Neither alone is enough: walls
+// stack, so every layer has a segment under the nozzle, and a 1 mm z-hop on 0.1 mm layers
+// lands exactly on another layer's Z.
 const LAYER_XY_TOLERANCE_MM = 2
 const LAYER_XY_SCAN_POINTS = 4000
 
@@ -91,8 +92,9 @@ const LAYER_XY_SCAN_POINTS = 4000
 const EXTRUDER_MOVING_MM_S = 0.01
 
 // motion_report updates that may disagree with the learned Z offset before it's taken
-// again - about a second. A scarf seam ramps Z down by up to a layer *while extruding*, so
-// a lock taken mid-seam would make every normal sample on the layer look like a lift.
+// again - about a second. Until live Z has matched a layer the panel goes by the read
+// position, which for the last seconds of every layer is already a layer ahead, and a lock
+// taken against that layer would make every real sample look like a lift.
 const Z_OFFSET_RELOCK_SAMPLES = 4
 
 @Component({
@@ -109,10 +111,10 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     showDialog = false
     // the layer the nozzle was last seen printing (by live Z); null until it matches one
     liveLayerIndex: number | null = null
-    // learned live Z - layer Z while on a printed segment: bed mesh plus whatever else
+    // learned live Z - segment Z while on a printed segment: bed mesh plus whatever else
     // Klipper adds that the gcode doesn't know about. null until the first on-path sample
     zOffsetEstimate: number | null = null
-    // consecutive on-path samples a lift above the estimate that no layer switch explained
+    // consecutive on-path samples off the estimate that no layer switch explained
     zOffsetMismatches = 0
 
     private worker: Worker | null = null
@@ -192,49 +194,56 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.layerSpacing * LIFT_FRACTION_OF_LAYER
     }
 
-    // the already-read layer whose Z the nozzle is sitting on (mesh offset removed); -1 while
-    // lifted, or before the offset is known. Switching to a *different* layer also needs the
-    // nozzle on one of that layer's printed segments, so a lift that happens to land on
-    // another layer's Z doesn't flip the view - and it's never an *earlier* layer: the file
-    // only moves forward, and a Z below the current layer while extruding is a scarf seam
-    // ramping down, not a return to the layer underneath
+    // the layer with an already-read printed segment under the nozzle at the nozzle's Z (mesh
+    // offset removed); -1 while lifted, off the path, or before the offset is known. The
+    // current layer keeps precedence, and a switch only ever goes *forward*: the file does,
+    // and a Z below the current layer while extruding is a scarf seam ramping down, not a
+    // return to the layer underneath
     findLayerAtZ(z: number): number {
         if (this.zOffsetEstimate === null) return -1
 
-        const readLimit = this.fileProgressOffset
         const corrected = z - this.zOffsetEstimate
-        let nearest = -1
-        let nearestDistance = Number.POSITIVE_INFINITY
-        for (let i = 0; i < this.layers.length; i++) {
-            if (this.layerStartOffsets[i] > readLimit) break
-            const distance = Math.abs(this.layers[i].z - corrected)
-            if (distance < nearestDistance) {
-                nearestDistance = distance
-                nearest = i
-            }
-        }
-        if (nearest === -1 || nearestDistance > this.liftThreshold) return -1
-        if (nearest === this.liveLayerIndex) return nearest
-        if (this.liveLayerIndex !== null && nearest < this.liveLayerIndex) return -1
-
+        const current = this.liveLayerIndex
+        if (current !== null && this.toolOnLayerAtZ(current, corrected)) return current
         if (!this.toolExtruding) return -1
 
-        return this.isOnLayerPath(this.layers[nearest], this.toolPositionXY, readLimit) ? nearest : -1
+        for (let i = this.layers.length - 1; i > (current ?? -1); i--) {
+            if (this.layerStartOffsets[i] > this.fileProgressOffset) continue
+            if (this.toolOnLayerAtZ(i, corrected)) return i
+        }
+        return -1
     }
 
-    isOnLayerPath(layer: GcodePreviewLayer, tool: [number, number] | null, readLimit: number): boolean {
-        if (!tool) return false
+    toolOnLayerAtZ(index: number, corrected: number): boolean {
+        const segmentZ = this.onPathSegmentZ(this.layers[index], corrected)
 
+        return segmentZ !== null && Math.abs(segmentZ - corrected) <= this.liftThreshold
+    }
+
+    // the Z of the layer's already-read printed segment under the nozzle, interpolated along
+    // it - the one nearest `target` where several overlap in XY (a scarf seam's end ramps down
+    // over its own start). null when no read segment is within tolerance
+    onPathSegmentZ(layer: GcodePreviewLayer, target: number | null): number | null {
+        const tool = this.toolPositionXY
+        if (!tool) return null
+
+        const readLimit = this.fileProgressOffset
         const toleranceSq = LAYER_XY_TOLERANCE_MM * LAYER_XY_TOLERANCE_MM
+        let best: number | null = null
         let scanned = 0
         for (const run of layer.runs) {
             for (let i = 0; i + 1 < run.length && scanned < LAYER_XY_SCAN_POINTS; i++, scanned++) {
                 // runs are in file order, so past the read limit nothing later is printed yet
-                if (run[i].offset > readLimit) return false
-                if (distanceSqToSegment(tool, run[i], run[i + 1]) <= toleranceSq) return true
+                if (run[i].offset > readLimit) return best
+                const { distanceSq, t } = closestPointOnSegment(tool, run[i], run[i + 1])
+                if (distanceSq > toleranceSq) continue
+
+                const z = run[i].z + (run[i + 1].z - run[i].z) * t
+                if (target === null) return z
+                if (best === null || Math.abs(z - target) < Math.abs(best - target)) best = z
             }
         }
-        return false
+        return best
     }
 
     get layerLabel(): string {
@@ -278,16 +287,14 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return [this.livePosition[0] - this.gcodeOffset[0], this.livePosition[1] - this.gcodeOffset[1]]
     }
 
-    // the nozzle is at the drawn layer's Z, i.e. not lifted for a travel - without this the
-    // chart would treat XY nearness to a printed segment as being on it. Below the layer
-    // still counts: a scarf seam extrudes while ramping down to the previous layer's height
+    // the nozzle is at the Z of the drawn layer's path under it, i.e. not lifted for a travel -
+    // without this the chart would treat XY nearness to a printed segment as being on it
     get toolOnLayer(): boolean {
         const z = this.liveZ
-        const layer = this.layers[this.currentLayerIndex]
-        if (z === null || !layer || this.zOffsetEstimate === null || !this.toolExtruding) return false
+        if (z === null || this.zOffsetEstimate === null || !this.toolExtruding) return false
+        if (!this.layers[this.currentLayerIndex]) return false
 
-        const lift = z - layer.z - this.zOffsetEstimate
-        return lift <= this.liftThreshold && lift >= -(this.layerSpacing + this.liftThreshold)
+        return this.toolOnLayerAtZ(this.currentLayerIndex, z - this.zOffsetEstimate)
     }
 
     @Watch('sdCardFilePath')
@@ -319,22 +326,23 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.learnZOffset(z)
     }
 
-    // while the nozzle is on a printed segment of the drawn layer, live Z - layer Z is the
-    // mesh plus whatever else Klipper adds. Once locked, only follow changes within the lift
-    // threshold: a rise past it is a lift or the next layer, a drop past it is a scarf seam
-    // ramping down while extruding, and learning from either would put the whole layer out
-    // of reach. A rise that persists with no layer switch to explain it means the lock
-    // itself was taken mid-seam, so it's taken again.
+    // while the nozzle is on a printed segment of the drawn layer, live Z - that segment's Z
+    // is the mesh plus whatever else Klipper adds. Compared to the *segment*, not the layer, a
+    // scarf seam's ramp is expected rather than learned: it would otherwise walk the offset a
+    // whole layer up in sub-threshold steps. Once locked, a sample off by more than the lift
+    // threshold is a lift, or a layer the switch hasn't caught up with - unless it persists,
+    // in which case the lock itself was taken against the wrong layer and is taken again.
     learnZOffset(z: number): void {
         const layer = this.layers[this.currentLayerIndex]
         if (!layer || !this.toolExtruding) return
-        if (!this.isOnLayerPath(layer, this.toolPositionXY, this.fileProgressOffset)) return
 
-        const observed = z - layer.z
-        if (this.zOffsetEstimate !== null) {
-            const change = observed - this.zOffsetEstimate
-            if (change < -this.liftThreshold) return
-            if (change > this.liftThreshold && ++this.zOffsetMismatches < Z_OFFSET_RELOCK_SAMPLES) return
+        const estimate = this.zOffsetEstimate
+        const segmentZ = this.onPathSegmentZ(layer, estimate === null ? null : z - estimate)
+        if (segmentZ === null) return
+
+        const observed = z - segmentZ
+        if (estimate !== null && Math.abs(observed - estimate) > this.liftThreshold) {
+            if (++this.zOffsetMismatches < Z_OFFSET_RELOCK_SAMPLES) return
         }
 
         this.zOffsetEstimate = observed

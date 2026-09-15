@@ -12,6 +12,8 @@
 export interface GcodePreviewPoint {
     x: number
     y: number
+    // the gcode's own Z at this point - a scarf seam ramps it below the layer's Z while extruding
+    z: number
     offset: number
 }
 
@@ -78,8 +80,15 @@ function pushPointDecimated(run: GcodePreviewRun, point: GcodePreviewPoint, minD
     run.push(point)
 }
 
-/** squared distance from a point to the segment a-b, shared by the chart and the panel */
-export function distanceSqToSegment(point: [number, number], a: GcodePreviewPoint, b: GcodePreviewPoint): number {
+/**
+ * the point of segment a-b nearest to a point: its squared distance, and how far along the
+ * segment it sits (0 at a, 1 at b). Shared by the chart and the panel.
+ */
+export function closestPointOnSegment(
+    point: [number, number],
+    a: GcodePreviewPoint,
+    b: GcodePreviewPoint
+): { distanceSq: number; t: number } {
     const abx = b.x - a.x
     const aby = b.y - a.y
     const apx = point[0] - a.x
@@ -89,7 +98,7 @@ export function distanceSqToSegment(point: [number, number], a: GcodePreviewPoin
     const dx = apx - t * abx
     const dy = apy - t * aby
 
-    return dx * dx + dy * dy
+    return { distanceSq: dx * dx + dy * dy, t }
 }
 
 /**
@@ -198,6 +207,7 @@ export function parseGcodeToolpath(text: string, bedSizeMm: number): GcodePrevie
         const params = parseParams(line)
         const prevX = x
         const prevY = y
+        const prevZ = z
         let hasXY = false
 
         if ('X' in params) {
@@ -248,13 +258,13 @@ export function parseGcodeToolpath(text: string, bedSizeMm: number): GcodePrevie
             // the travel that just brought the head here belongs with the layer it arrived at
             finishTravel()
 
-            if (currentRun.length === 0) currentRun.push({ x: prevX, y: prevY, offset: startOffset })
-            pushPointDecimated(currentRun, { x, y, offset: startOffset }, minDistanceSq)
+            if (currentRun.length === 0) currentRun.push({ x: prevX, y: prevY, z: prevZ, offset: startOffset })
+            pushPointDecimated(currentRun, { x, y, z, offset: startOffset }, minDistanceSq)
         } else {
             finishRun()
 
-            if (currentTravel.length === 0) currentTravel.push({ x: prevX, y: prevY, offset: startOffset })
-            pushPointDecimated(currentTravel, { x, y, offset: startOffset }, minDistanceSq)
+            if (currentTravel.length === 0) currentTravel.push({ x: prevX, y: prevY, z: prevZ, offset: startOffset })
+            pushPointDecimated(currentTravel, { x, y, z, offset: startOffset }, minDistanceSq)
         }
     }
 

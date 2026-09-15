@@ -83,11 +83,9 @@
 import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
 import BaseMixin from '@/components/mixins/base'
 import ThemeMixin from '@/components/mixins/theme'
-import throttle from 'lodash.throttle'
 import { defaultPrimaryColor } from '@/store/variables'
 import { distanceSqToSegment, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
 
-const PROGRESS_THROTTLE_MS = 500
 const GRID_SPACING_MM = 25
 
 // how far back from the file position to look for the segment the toolhead is on - big
@@ -112,14 +110,8 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     // nozzle Z matches the drawn layer's Z - false while lifted for a travel
     @Prop({ type: Boolean, required: false, default: false }) declare readonly toolOnLayer: boolean
 
-    throttledProgressOffset = 0
     // the last cut taken while the nozzle was on the path; held through travels and z-hops
     lastOnPathOffset: number | null = null
-
-    // built in created(), not as a class-field initializer - a class field's arrow function
-    // captures `this` before vue-class-component finishes wiring up the reactive instance, so
-    // assignments from inside it silently miss reactivity.
-    private setThrottledProgressOffset: ((value: number) => void) & { cancel(): void } = throttle(() => {}, 0)
 
     get primaryColor() {
         return this.$store.state.gui.theme?.primary ?? defaultPrimaryColor
@@ -186,7 +178,9 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     // wrong Z, or too far from every segment - the cut *holds* at the last on-path position
     // instead of chasing whatever the nozzle happens to be passing over.
     get toolheadCut(): { offset: number; anchor: [number, number] | null } {
-        const fileOffset = this.throttledProgressOffset
+        // the *live* file position: during dense infill Klipper reads only a few moves ahead
+        // of the nozzle, and a throttled copy of it can fall behind the segment being printed
+        const fileOffset = this.progressOffset
         const tool = this.toolPosition
         if (!tool) return { offset: fileOffset, anchor: null }
 
@@ -264,11 +258,6 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
         return { done, remaining }
     }
 
-    @Watch('progressOffset', { immediate: true })
-    progressOffsetChanged(newVal: number): void {
-        this.setThrottledProgressOffset(newVal)
-    }
-
     // the held cut is state, so it lives here rather than in the getter: remember every
     // on-path cut, and forget it when the runs change - a new layer is a new toolpath
     @Watch('toolheadCut')
@@ -279,20 +268,6 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     @Watch('runs')
     runsChanged(): void {
         this.lastOnPathOffset = null
-    }
-
-    created(): void {
-        this.setThrottledProgressOffset = throttle((value: number) => {
-            this.throttledProgressOffset = value
-        }, PROGRESS_THROTTLE_MS)
-        // the immediate watcher above already fired, into the placeholder - take the
-        // current value now, or a progress that never changes again (an idle or finished
-        // print) would leave the whole path drawn as not-yet-printed
-        this.throttledProgressOffset = this.progressOffset
-    }
-
-    beforeDestroy(): void {
-        this.setThrottledProgressOffset.cancel()
     }
 
     convertY(y: number): number {

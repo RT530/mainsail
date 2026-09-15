@@ -74,10 +74,12 @@ import { mdiRefresh, mdiVideo2d } from '@mdi/js'
 
 const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
 
-// how close the live nozzle Z must be to a layer's Z to count as printing that layer.
-// Tight on purpose: a z-hop lifts the nozzle clear of every layer's Z, and during one we
-// keep the last matched layer rather than guessing.
-const LIVE_LAYER_Z_TOLERANCE_MM = 0.02
+// live Z includes bed-mesh compensation (up to a full layer height on this bed), so "at
+// the layer's Z" can't be an absolute tolerance. The offset live Z - layer Z is learned
+// while the nozzle is on a printed segment, and a z-hop is a rise past this fraction of
+// the layer spacing above that learned offset. Mesh drift between samples is far smaller.
+const LIFT_FRACTION_OF_LAYER = 0.5
+const DEFAULT_LAYER_SPACING_MM = 0.2
 
 // a candidate layer other than the current one also has to have the nozzle on one of its
 // already-read printed segments - the same on-path tolerance the chart uses. Z alone isn't
@@ -99,6 +101,9 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     showDialog = false
     // the layer the nozzle was last seen printing (by live Z); null until it matches one
     liveLayerIndex: number | null = null
+    // learned live Z - layer Z while on a printed segment: bed mesh plus whatever else
+    // Klipper adds that the gcode doesn't know about. null until the first on-path sample
+    zOffsetEstimate: number | null = null
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
@@ -163,18 +168,43 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.livePosition[2] - (this.gcodeOffset[2] ?? 0)
     }
 
-    // highest already-read layer whose Z the nozzle is sitting on; -1 mid z-hop. Switching
-    // to a *different* layer also needs the nozzle on one of that layer's printed segments,
-    // so a lift that happens to land on another layer's Z doesn't flip the view
-    findLayerAtZ(z: number): number {
-        const readLimit = this.fileProgressOffset
-        const tool = this.toolPositionXY
-        for (let i = this.layers.length - 1; i >= 0; i--) {
-            if (this.layerStartOffsets[i] > readLimit) continue
-            if (Math.abs(this.layers[i].z - z) > LIVE_LAYER_Z_TOLERANCE_MM) continue
-            if (i === this.liveLayerIndex || this.isOnLayerPath(this.layers[i], tool, readLimit)) return i
+    // smallest step between consecutive layer Zs, so the lift threshold scales with the file
+    get layerSpacing(): number {
+        let spacing = Number.POSITIVE_INFINITY
+        for (let i = 1; i < this.layers.length; i++) {
+            const step = this.layers[i].z - this.layers[i - 1].z
+            if (step > 0 && step < spacing) spacing = step
         }
-        return -1
+        return Number.isFinite(spacing) ? spacing : DEFAULT_LAYER_SPACING_MM
+    }
+
+    get liftThreshold(): number {
+        return this.layerSpacing * LIFT_FRACTION_OF_LAYER
+    }
+
+    // the already-read layer whose Z the nozzle is sitting on (mesh offset removed); -1 while
+    // lifted, or before the offset is known. Switching to a *different* layer also needs the
+    // nozzle on one of that layer's printed segments, so a lift that happens to land on
+    // another layer's Z doesn't flip the view
+    findLayerAtZ(z: number): number {
+        if (this.zOffsetEstimate === null) return -1
+
+        const readLimit = this.fileProgressOffset
+        const corrected = z - this.zOffsetEstimate
+        let nearest = -1
+        let nearestDistance = Number.POSITIVE_INFINITY
+        for (let i = 0; i < this.layers.length; i++) {
+            if (this.layerStartOffsets[i] > readLimit) break
+            const distance = Math.abs(this.layers[i].z - corrected)
+            if (distance < nearestDistance) {
+                nearestDistance = distance
+                nearest = i
+            }
+        }
+        if (nearest === -1 || nearestDistance > this.liftThreshold) return -1
+        if (nearest === this.liveLayerIndex) return nearest
+
+        return this.isOnLayerPath(this.layers[nearest], this.toolPositionXY, readLimit) ? nearest : -1
     }
 
     isOnLayerPath(layer: GcodePreviewLayer, tool: [number, number] | null, readLimit: number): boolean {
@@ -234,9 +264,9 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     get toolOnLayer(): boolean {
         const z = this.liveZ
         const layer = this.layers[this.currentLayerIndex]
-        if (z === null || !layer) return false
+        if (z === null || !layer || this.zOffsetEstimate === null) return false
 
-        return Math.abs(layer.z - z) <= LIVE_LAYER_Z_TOLERANCE_MM
+        return Math.abs(z - layer.z - this.zOffsetEstimate) <= this.liftThreshold
     }
 
     @Watch('sdCardFilePath')
@@ -253,11 +283,27 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     liveZChanged(z: number | null): void {
         if (z === null) {
             this.liveLayerIndex = null
+            this.zOffsetEstimate = null
             return
         }
 
+        this.learnZOffset(z)
         const index = this.findLayerAtZ(z)
         if (index !== -1) this.liveLayerIndex = index
+    }
+
+    // while the nozzle is on a printed segment of the drawn layer, live Z - layer Z is the
+    // mesh plus whatever else Klipper adds. Track it, but never learn from a rise bigger
+    // than the lift threshold - that's a z-hop, not the bed. A wrong first sample (taken
+    // mid-hop) corrects itself on the next on-path one, since a drop is always accepted.
+    learnZOffset(z: number): void {
+        const layer = this.layers[this.currentLayerIndex]
+        if (!layer || !this.isOnLayerPath(layer, this.toolPositionXY, this.fileProgressOffset)) return
+
+        const observed = z - layer.z
+        if (this.zOffsetEstimate !== null && observed - this.zOffsetEstimate > this.liftThreshold) return
+
+        this.zOffsetEstimate = observed
     }
 
     @Watch('printerIsPrinting')
@@ -288,6 +334,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
 
         this.layers = []
         this.liveLayerIndex = null
+        this.zOffsetEstimate = null
         this.loadedFilename = null
         this.error = null
         this.loading = false
@@ -307,6 +354,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.error = null
         this.layers = []
         this.liveLayerIndex = null
+        this.zOffsetEstimate = null
 
         // cancelling can't call back an already-fulfilled request, so every load carries
         // an id and anything that isn't the newest one is dropped on arrival

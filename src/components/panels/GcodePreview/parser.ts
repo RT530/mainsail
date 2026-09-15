@@ -111,6 +111,13 @@ export function parseGcodeToolpath(text: string, bedSizeMm: number): GcodePrevie
     let relativeXYZ = false
     let relativeE = false
     let offset = 0
+    // slicers that mark layer changes (;LAYER_CHANGE / ;LAYER:) drive the layer split
+    // themselves - a scarf seam ramps Z while extruding, which would otherwise start a new
+    // "layer" every few hundredths of a millimetre
+    let markerLayers = false
+    let layerChangePending = false
+    let pendingLayerZ: number | null = null
+    let markerCommits = 0
 
     const finishRun = (): void => {
         if (currentRun.length > 1) currentLayer.runs.push(currentRun)
@@ -140,6 +147,19 @@ export function parseGcodeToolpath(text: string, bedSizeMm: number): GcodePrevie
         // virtual_sdcard.file_position, and a non-ASCII comment would otherwise make
         // every later point's offset drift short of the real byte position
         offset += utf8ByteLength(rawLine) + 1 // + the split-away newline
+
+        const trimmedRaw = rawLine.trim()
+        if (trimmedRaw.startsWith(';LAYER_CHANGE') || trimmedRaw.startsWith(';LAYER:')) {
+            markerLayers = true
+            layerChangePending = true
+            pendingLayerZ = null
+            continue
+        }
+        if (layerChangePending && trimmedRaw.startsWith(';Z:')) {
+            const markerZ = parseFloat(trimmedRaw.slice(3))
+            if (!Number.isNaN(markerZ)) pendingLayerZ = markerZ
+            continue
+        }
 
         const line = stripComment(rawLine).trim()
         if (!line) continue
@@ -208,12 +228,22 @@ export function parseGcodeToolpath(text: string, bedSizeMm: number): GcodePrevie
             // z-hop (lift for travel, then lower back to the same print height before the
             // next extrusion) never reaches this branch at the hopped height, so it can't
             // split one physical layer into two
-            if (Math.abs(z - currentLayer.z) > LAYER_Z_EPSILON) {
+            const newLayer = markerLayers ? layerChangePending : Math.abs(z - currentLayer.z) > LAYER_Z_EPSILON
+            if (newLayer) {
                 // close the old layer's extrusion but leave the pending travel alone: it
                 // is the lead-in that moved the head here, so it belongs to the new layer
                 finishRun()
-                pushLayer()
-                currentLayer = { z, runs: [], travels: [] }
+                if (markerLayers && markerCommits === 0 && currentLayer.runs.length > 0) {
+                    // extrusion before the first marker (a purge line) is part of layer one,
+                    // not a layer of its own - that would put the count one above the slicer's
+                    currentLayer.z = pendingLayerZ ?? z
+                } else {
+                    pushLayer()
+                    currentLayer = { z: pendingLayerZ ?? z, runs: [], travels: [] }
+                }
+                if (markerLayers) markerCommits++
+                layerChangePending = false
+                pendingLayerZ = null
             }
             // the travel that just brought the head here belongs with the layer it arrived at
             finishTravel()

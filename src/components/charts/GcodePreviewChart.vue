@@ -85,20 +85,20 @@ import BaseMixin from '@/components/mixins/base'
 import ThemeMixin from '@/components/mixins/theme'
 import throttle from 'lodash.throttle'
 import { defaultPrimaryColor } from '@/store/variables'
-import { GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
+import { GcodePreviewPoint, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
 
 const PROGRESS_THROTTLE_MS = 500
 const GRID_SPACING_MM = 25
 
-// how far back from the file position to look for the point nearest the toolhead - big
+// how far back from the file position to look for the segment the toolhead is on - big
 // enough to cover Klipper's lookahead queue, small enough that a path crossing its own
 // earlier track can't match something from the far side of the layer
 const TOOLHEAD_LOOKBACK_POINTS = 4000
 
-// how far the drawn line may be extended to reach the toolhead. It only ever has to cover
-// the gap to the next stored vertex; anything longer means the head is off the extrusion
-// path (mid-travel), where drawing to it would cut a false line across the part.
-const MAX_ANCHOR_DISTANCE_MM = 10
+// how far the nozzle may sit from the nearest extrusion segment and still count as being
+// on it. Anything further means it's off the path - mid-travel, or parked for a pause -
+// where drawing the line out to it would cut a false stroke across the part.
+const ON_PATH_TOLERANCE_MM = 2
 
 @Component
 export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
@@ -166,40 +166,20 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     }
 
     get splitRuns(): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
-        const split = this.splitByProgress(this.runs)
-
-        return { done: this.anchorToToolhead(split.done), remaining: split.remaining }
-    }
-
-    // the cut lands on a stored vertex, which can sit up to the decimation spacing short of
-    // the nozzle - carry the last run through to the live position so the printed line
-    // actually meets the toolhead marker instead of trailing it
-    anchorToToolhead(done: GcodePreviewRun[]): GcodePreviewRun[] {
-        const tool = this.toolPosition
-        if (!tool || done.length === 0) return done
-
-        const lastRun = done[done.length - 1]
-        const lastPoint = lastRun[lastRun.length - 1]
-        if (!lastPoint) return done
-
-        const dx = tool[0] - lastPoint.x
-        const dy = tool[1] - lastPoint.y
-        if (dx * dx + dy * dy > MAX_ANCHOR_DISTANCE_MM * MAX_ANCHOR_DISTANCE_MM) return done
-
-        const anchored = [...done]
-        anchored[anchored.length - 1] = [...lastRun, { x: tool[0], y: tool[1], offset: lastPoint.offset }]
-
-        return anchored
+        return this.splitByProgress(this.runs, this.toolheadCut.anchor)
     }
 
     // virtual_sdcard.file_position is where Klipper has *read* to, and it runs ahead of the
     // nozzle by the whole lookahead queue - drawing to it puts the printed line visibly in
     // front of the toolhead marker. Anchor the cut to the live position instead: walk back
-    // from the file position to the already-read point closest to where the head really is.
-    get effectiveProgressOffset(): number {
+    // from the file position to the already-read *segment* the head is on, cut at that
+    // segment's start, and carry the line through to the head itself. It has to be the
+    // nearest segment, not the nearest vertex: on a long straight move the nearest vertex
+    // can be the far end of the segment, tens of millimetres ahead of the nozzle.
+    get toolheadCut(): { offset: number; anchor: [number, number] | null } {
         const fileOffset = this.throttledProgressOffset
         const tool = this.toolPosition
-        if (!tool) return fileOffset
+        if (!tool) return { offset: fileOffset, anchor: null }
 
         let bestOffset = -1
         let bestDistance = Number.POSITIVE_INFINITY
@@ -207,28 +187,33 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
 
         for (let r = this.runs.length - 1; r >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; r--) {
             const run = this.runs[r]
-            for (let i = run.length - 1; i >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; i--) {
-                const point = run[i]
-                if (point.offset > fileOffset) continue
+            for (let i = run.length - 2; i >= 0 && scanned < TOOLHEAD_LOOKBACK_POINTS; i--) {
+                const start = run[i]
+                if (start.offset > fileOffset) continue
 
                 scanned++
-                const dx = point.x - tool[0]
-                const dy = point.y - tool[1]
-                const distance = dx * dx + dy * dy
+                const distance = this.distanceSqToSegment(tool, start, run[i + 1])
                 if (distance < bestDistance) {
                     bestDistance = distance
-                    bestOffset = point.offset
+                    bestOffset = start.offset
                 }
             }
         }
 
-        return bestOffset === -1 ? fileOffset : bestOffset
+        if (bestOffset === -1) return { offset: fileOffset, anchor: null }
+
+        const onPath = bestDistance <= ON_PATH_TOLERANCE_MM * ON_PATH_TOLERANCE_MM
+        return { offset: bestOffset, anchor: onPath ? tool : null }
     }
 
-    splitByProgress(runs: GcodePreviewRun[]): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
+    splitByProgress(
+        runs: GcodePreviewRun[],
+        anchor: [number, number] | null = null
+    ): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
         const done: GcodePreviewRun[] = []
         const remaining: GcodePreviewRun[] = []
-        const progress = this.effectiveProgressOffset
+        const progress = this.toolheadCut.offset
+        let anchored = false
 
         for (const run of runs) {
             const splitIndex = run.findIndex((point) => point.offset > progress)
@@ -243,11 +228,31 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
                 continue
             }
 
-            done.push(run.slice(0, splitIndex + 1))
+            // the done half ends at the last read vertex, never one past it - "one past" on
+            // a long straight move is the far end of the segment, well ahead of the head
+            const doneRun = run.slice(0, splitIndex)
+            if (anchor && !anchored) {
+                doneRun.push({ x: anchor[0], y: anchor[1], offset: progress })
+                anchored = true
+            }
+            done.push(doneRun)
             remaining.push(run.slice(splitIndex - 1))
         }
 
         return { done, remaining }
+    }
+
+    distanceSqToSegment(point: [number, number], a: GcodePreviewPoint, b: GcodePreviewPoint): number {
+        const abx = b.x - a.x
+        const aby = b.y - a.y
+        const apx = point[0] - a.x
+        const apy = point[1] - a.y
+        const lengthSq = abx * abx + aby * aby
+        const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / lengthSq))
+        const dx = apx - t * abx
+        const dy = apy - t * aby
+
+        return dx * dx + dy * dy
     }
 
     @Watch('progressOffset', { immediate: true })

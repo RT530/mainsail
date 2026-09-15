@@ -68,6 +68,13 @@
             stroke-width="1"
             vector-effect="non-scaling-stroke" />
         <path :d="donePath" fill="none" :stroke="primaryColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        <path
+            :d="liveTravelPath"
+            fill="none"
+            stroke="#ffd600"
+            stroke-width="1"
+            stroke-dasharray="2,2"
+            vector-effect="non-scaling-stroke" />
         <circle
             v-if="toolPosition"
             class="gcode-preview-tool"
@@ -85,7 +92,7 @@ import BaseMixin from '@/components/mixins/base'
 import ThemeMixin from '@/components/mixins/theme'
 import throttle from 'lodash.throttle'
 import { defaultPrimaryColor } from '@/store/variables'
-import { GcodePreviewPoint, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
+import { distanceSqToSegment, GcodePreviewRun } from '@/components/panels/GcodePreview/parser'
 
 const PROGRESS_THROTTLE_MS = 500
 const GRID_SPACING_MM = 25
@@ -109,8 +116,13 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     @Prop({ type: Array, required: false, default: null }) declare readonly toolPosition: [number, number] | null
     @Prop({ type: Array, required: true }) declare readonly bedMin: number[]
     @Prop({ type: Array, required: true }) declare readonly bedMax: number[]
+    // nozzle Z matches the drawn layer's Z - false while lifted for a travel
+    @Prop({ type: Boolean, required: false, default: false }) declare readonly toolOnLayer: boolean
+    @Prop({ type: Boolean, required: false, default: false }) declare readonly showLiveTravel: boolean
 
     throttledProgressOffset = 0
+    // the last cut taken while the nozzle was on the path; held through travels and z-hops
+    lastOnPathOffset: number | null = null
 
     // built in created(), not as a class-field initializer - a class field's arrow function
     // captures `this` before vue-class-component finishes wiring up the reactive instance, so
@@ -169,6 +181,26 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
         return this.splitByProgress(this.runs, this.toolheadCut.anchor)
     }
 
+    // off the path the solid line stops at the last printed point; connect it to the nozzle
+    // with a dashed travel so the marker never floats free. Empty on-path (the solid line
+    // already reaches the marker) and while not actively printing (a paused head is parked,
+    // not travelling)
+    get liveTravelPath(): string {
+        const tool = this.toolPosition
+        if (!this.showLiveTravel || !tool || this.toolheadCut.anchor !== null) return ''
+
+        const done = this.splitRuns.done
+        const lastRun = done[done.length - 1]
+        const last = lastRun?.[lastRun.length - 1]
+        if (!last) return ''
+
+        const dx = tool[0] - last.x
+        const dy = tool[1] - last.y
+        if (dx * dx + dy * dy > this.bedWidth * this.bedWidth + this.bedHeight * this.bedHeight) return ''
+
+        return this.runToSubpath([last, { x: tool[0], y: tool[1], offset: last.offset }])
+    }
+
     // virtual_sdcard.file_position is where Klipper has *read* to, and it runs ahead of the
     // nozzle by the whole lookahead queue - drawing to it puts the printed line visibly in
     // front of the toolhead marker. Anchor the cut to the live position instead: walk back
@@ -176,10 +208,21 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     // segment's start, and carry the line through to the head itself. It has to be the
     // nearest segment, not the nearest vertex: on a long straight move the nearest vertex
     // can be the far end of the segment, tens of millimetres ahead of the nozzle.
+    //
+    // Being near a printed segment in XY is not proof of being on it: a z-hop lifts the
+    // nozzle clear of the layer and flies it over lines already laid down. So off the path -
+    // wrong Z, or too far from every segment - the cut *holds* at the last on-path position
+    // instead of chasing whatever the nozzle happens to be passing over.
     get toolheadCut(): { offset: number; anchor: [number, number] | null } {
         const fileOffset = this.throttledProgressOffset
         const tool = this.toolPosition
         if (!tool) return { offset: fileOffset, anchor: null }
+
+        const held: { offset: number; anchor: [number, number] | null } = {
+            offset: Math.min(this.lastOnPathOffset ?? this.runs[0]?.[0]?.offset ?? fileOffset, fileOffset),
+            anchor: null,
+        }
+        if (!this.toolOnLayer) return held
 
         let bestOffset = -1
         let bestDistance = Number.POSITIVE_INFINITY
@@ -192,7 +235,7 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
                 if (start.offset > fileOffset) continue
 
                 scanned++
-                const distance = this.distanceSqToSegment(tool, start, run[i + 1])
+                const distance = distanceSqToSegment(tool, start, run[i + 1])
                 if (distance < bestDistance) {
                     bestDistance = distance
                     bestOffset = start.offset
@@ -200,10 +243,9 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
             }
         }
 
-        if (bestOffset === -1) return { offset: fileOffset, anchor: null }
+        if (bestOffset === -1 || bestDistance > ON_PATH_TOLERANCE_MM * ON_PATH_TOLERANCE_MM) return held
 
-        const onPath = bestDistance <= ON_PATH_TOLERANCE_MM * ON_PATH_TOLERANCE_MM
-        return { offset: bestOffset, anchor: onPath ? tool : null }
+        return { offset: bestOffset, anchor: tool }
     }
 
     splitByProgress(
@@ -242,22 +284,21 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
         return { done, remaining }
     }
 
-    distanceSqToSegment(point: [number, number], a: GcodePreviewPoint, b: GcodePreviewPoint): number {
-        const abx = b.x - a.x
-        const aby = b.y - a.y
-        const apx = point[0] - a.x
-        const apy = point[1] - a.y
-        const lengthSq = abx * abx + aby * aby
-        const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, (apx * abx + apy * aby) / lengthSq))
-        const dx = apx - t * abx
-        const dy = apy - t * aby
-
-        return dx * dx + dy * dy
-    }
-
     @Watch('progressOffset', { immediate: true })
     progressOffsetChanged(newVal: number): void {
         this.setThrottledProgressOffset(newVal)
+    }
+
+    // the held cut is state, so it lives here rather than in the getter: remember every
+    // on-path cut, and forget it when the runs change - a new layer is a new toolpath
+    @Watch('toolheadCut')
+    toolheadCutChanged(cut: { offset: number; anchor: [number, number] | null }): void {
+        if (cut.anchor !== null && cut.offset !== this.lastOnPathOffset) this.lastOnPathOffset = cut.offset
+    }
+
+    @Watch('runs')
+    runsChanged(): void {
+        this.lastOnPathOffset = null
     }
 
     created(): void {

@@ -85,6 +85,11 @@ const DEFAULT_LAYER_SPACING_MM = 0.2
 const LAYER_XY_TOLERANCE_MM = 2
 const LAYER_XY_SCAN_POINTS = 4000
 
+// Klipper reports the extruder's live velocity; above this it's laying plastic down. A
+// travel that doesn't z-hop (short moves under the retract distance) stays at layer Z and
+// passes within tolerance of printed lines, and only this tells it apart from extrusion.
+const EXTRUDER_MOVING_MM_S = 0.01
+
 @Component({
     components: { Panel, GcodePreviewChart, GcodePreviewDialog },
 })
@@ -202,6 +207,8 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         if (nearest === -1 || nearestDistance > this.liftThreshold) return -1
         if (nearest === this.liveLayerIndex) return nearest
 
+        if (!this.toolExtruding) return -1
+
         return this.isOnLayerPath(this.layers[nearest], this.toolPositionXY, readLimit) ? nearest : -1
     }
 
@@ -251,6 +258,10 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.$store.state.printer.motion_report?.live_position ?? [0, 0, 0, 0]
     }
 
+    get toolExtruding(): boolean {
+        return (this.$store.state.printer.motion_report?.live_extruder_velocity ?? 0) > EXTRUDER_MOVING_MM_S
+    }
+
     get toolPositionXY(): [number, number] | null {
         if (!this.printerIsPrinting) return null
 
@@ -262,7 +273,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     get toolOnLayer(): boolean {
         const z = this.liveZ
         const layer = this.layers[this.currentLayerIndex]
-        if (z === null || !layer || this.zOffsetEstimate === null) return false
+        if (z === null || !layer || this.zOffsetEstimate === null || !this.toolExtruding) return false
 
         return Math.abs(z - layer.z - this.zOffsetEstimate) <= this.liftThreshold
     }
@@ -296,7 +307,8 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // mid-hop) corrects itself on the next on-path one, since a drop is always accepted.
     learnZOffset(z: number): void {
         const layer = this.layers[this.currentLayerIndex]
-        if (!layer || !this.isOnLayerPath(layer, this.toolPositionXY, this.fileProgressOffset)) return
+        if (!layer || !this.toolExtruding) return
+        if (!this.isOnLayerPath(layer, this.toolPositionXY, this.fileProgressOffset)) return
 
         const observed = z - layer.z
         if (this.zOffsetEstimate !== null && observed - this.zOffsetEstimate > this.liftThreshold) return

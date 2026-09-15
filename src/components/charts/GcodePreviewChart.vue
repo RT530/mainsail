@@ -68,13 +68,6 @@
             stroke-width="1"
             vector-effect="non-scaling-stroke" />
         <path :d="donePath" fill="none" :stroke="primaryColor" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-        <path
-            :d="liveTravelPath"
-            fill="none"
-            stroke="#ffd600"
-            stroke-width="1"
-            stroke-dasharray="2,2"
-            vector-effect="non-scaling-stroke" />
         <circle
             v-if="toolPosition"
             class="gcode-preview-tool"
@@ -118,7 +111,6 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     @Prop({ type: Array, required: true }) declare readonly bedMax: number[]
     // nozzle Z matches the drawn layer's Z - false while lifted for a travel
     @Prop({ type: Boolean, required: false, default: false }) declare readonly toolOnLayer: boolean
-    @Prop({ type: Boolean, required: false, default: false }) declare readonly showLiveTravel: boolean
 
     throttledProgressOffset = 0
     // the last cut taken while the nozzle was on the path; held through travels and z-hops
@@ -179,26 +171,6 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
 
     get splitRuns(): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
         return this.splitByProgress(this.runs, this.toolheadCut.anchor)
-    }
-
-    // off the path the solid line stops at the last printed point; connect it to the nozzle
-    // with a dashed travel so the marker never floats free. Empty on-path (the solid line
-    // already reaches the marker) and while not actively printing (a paused head is parked,
-    // not travelling)
-    get liveTravelPath(): string {
-        const tool = this.toolPosition
-        if (!this.showLiveTravel || !tool || this.toolheadCut.anchor !== null) return ''
-
-        const done = this.splitRuns.done
-        const lastRun = done[done.length - 1]
-        const last = lastRun?.[lastRun.length - 1]
-        if (!last) return ''
-
-        const dx = tool[0] - last.x
-        const dy = tool[1] - last.y
-        if (dx * dx + dy * dy > this.bedWidth * this.bedWidth + this.bedHeight * this.bedHeight) return ''
-
-        return this.runToSubpath([last, { x: tool[0], y: tool[1], offset: last.offset }])
     }
 
     // virtual_sdcard.file_position is where Klipper has *read* to, and it runs ahead of the

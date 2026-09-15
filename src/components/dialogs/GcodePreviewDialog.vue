@@ -37,8 +37,7 @@
                         :tool-position="toolPosition"
                         :bed-min="bedMin"
                         :bed-max="bedMax"
-                        :tool-on-layer="toolOnLayer"
-                        :show-live-travel="showLiveTravel" />
+                        :tool-on-layer="toolOnLayer" />
                 </div>
             </v-card-text>
         </panel>
@@ -72,7 +71,6 @@ export default class GcodePreviewDialog extends Mixins(BaseMixin) {
     @Prop({ type: Boolean, default: true }) declare readonly showPrintPreview: boolean
     @Prop({ type: Boolean, default: false }) declare readonly showMovePath: boolean
     @Prop({ type: Boolean, default: false }) declare readonly toolOnLayer: boolean
-    @Prop({ type: Boolean, default: false }) declare readonly showLiveTravel: boolean
 }
 </script>
 

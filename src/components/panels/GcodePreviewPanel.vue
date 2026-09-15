@@ -76,6 +76,11 @@ import { mdiRefresh, mdiVideo2d } from '@mdi/js'
 
 const MAX_FILE_SIZE_BYTES = 80 * 1024 * 1024
 
+// how close the live nozzle Z must be to a layer's Z to count as printing that layer.
+// Tight on purpose: a z-hop lifts the nozzle clear of every layer's Z, and during one we
+// keep the last matched layer rather than guessing.
+const LIVE_LAYER_Z_TOLERANCE_MM = 0.02
+
 @Component({
     components: { Panel, GcodePreviewChart, GcodePreviewDialog },
 })
@@ -90,6 +95,8 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     layers: GcodePreviewLayer[] = []
     loadedFilename: string | null = null
     showDialog = false
+    // the layer the nozzle was last seen printing (by live Z); null until it matches one
+    liveLayerIndex: number | null = null
 
     private worker: Worker | null = null
     private cancelTokenSource: CancelTokenSource | null = null
@@ -134,15 +141,34 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         return this.layers.map((layer) => layer.runs[0]?.[0]?.offset ?? 0)
     }
 
-    // which layer is "current" is derived from the same progress value used for the
-    // done/remaining split - the layer whose extrusion starts at or before the current
-    // file position is the one actively being (or last) printed
+    // the layer the nozzle is actually on wins. The file position runs a whole lookahead
+    // queue ahead of the head, so it flips to the next layer while the last perimeters of
+    // this one are still being laid down - and the head then wanders over paths that
+    // aren't its own. Fall back to the file position only until live Z has matched a layer.
     get currentLayerIndex(): number {
+        if (this.liveLayerIndex !== null && this.liveLayerIndex < this.layers.length) return this.liveLayerIndex
+
         const progress = this.fileProgressOffset
         for (let i = this.layerStartOffsets.length - 1; i >= 0; i--) {
             if (progress >= this.layerStartOffsets[i]) return i
         }
         return 0
+    }
+
+    get liveZ(): number | null {
+        if (!this.printerIsPrinting) return null
+
+        return this.livePosition[2] - (this.gcodeOffset[2] ?? 0)
+    }
+
+    // highest already-read layer whose Z the nozzle is sitting on; -1 mid z-hop
+    findLayerAtZ(z: number): number {
+        const readLimit = this.fileProgressOffset
+        for (let i = this.layers.length - 1; i >= 0; i--) {
+            if (this.layerStartOffsets[i] > readLimit) continue
+            if (Math.abs(this.layers[i].z - z) <= LIVE_LAYER_Z_TOLERANCE_MM) return i
+        }
+        return -1
     }
 
     get layerLabel(): string {
@@ -192,6 +218,17 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // print_stats.filename survives the end of a job, so without this the panel keeps
     // showing the finished file's toolpath - and reloads it on mount - until the next
     // print starts. A job that stops for any reason clears the preview instead.
+    @Watch('liveZ')
+    liveZChanged(z: number | null): void {
+        if (z === null) {
+            this.liveLayerIndex = null
+            return
+        }
+
+        const index = this.findLayerAtZ(z)
+        if (index !== -1) this.liveLayerIndex = index
+    }
+
     @Watch('printerIsPrinting')
     printerIsPrintingChanged(isPrinting: boolean): void {
         if (isPrinting) {
@@ -219,6 +256,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.worker = null
 
         this.layers = []
+        this.liveLayerIndex = null
         this.loadedFilename = null
         this.error = null
         this.loading = false
@@ -237,6 +275,7 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
         this.loading = true
         this.error = null
         this.layers = []
+        this.liveLayerIndex = null
 
         // cancelling can't call back an already-fulfilled request, so every load carries
         // an id and anything that isn't the newest one is dropped on arrival

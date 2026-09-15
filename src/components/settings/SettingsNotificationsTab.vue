@@ -33,54 +33,50 @@
                                 :disabled="loading"
                                 @change="onEnabledChanged" />
                         </settings-row>
-                        <template v-if="hasProgressMacro">
-                            <v-divider class="my-2" />
-                            <settings-row
-                                :title="$t('Settings.NotificationsTab.Progress')"
-                                :sub-title="
-                                    pendingFirmwareRestart
-                                        ? $t('Settings.NotificationsTab.MacrosPendingRestart')
-                                        : $t('Settings.NotificationsTab.ProgressDescription')
-                                "
-                                :mobile-second-row="true">
-                                <v-select
-                                    v-model="progressInterval"
-                                    :items="progressOptions"
-                                    hide-details
-                                    outlined
-                                    dense />
-                            </settings-row>
-                        </template>
-                        <template v-if="hasRunoutMacro">
-                            <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.Runout') }}</h3>
-                            <p class="mb-3 text--secondary runout-hint">
-                                {{
-                                    pendingFirmwareRestart
-                                        ? $t('Settings.NotificationsTab.MacrosPendingRestart')
-                                        : $t('Settings.NotificationsTab.RunoutDescription')
-                                }}
-                            </p>
-                            <template v-if="availableRunoutSensors.length">
-                                <template v-for="(sensor, index) in availableRunoutSensors">
-                                    <v-divider v-if="index" :key="'runout_divider_' + sensor" class="my-2" />
-                                    <settings-row :key="sensor" :title="convertName(sensor)" :dynamic-slot-width="true">
-                                        <v-switch
-                                            :input-value="isRunoutSensorEnabled(sensor)"
-                                            hide-details
-                                            class="mt-0"
-                                            @change="setRunoutSensor(sensor, $event)" />
-                                    </settings-row>
-                                </template>
-                            </template>
-                            <p v-else class="mb-0 text-center font-italic">
-                                {{ $t('Settings.NotificationsTab.RunoutNoSensors') }}
-                            </p>
-                        </template>
                     </template>
                 </template>
                 <v-alert v-else dense text type="info" class="mb-0 mt-3">
                     {{ $t('Settings.NotificationsTab.EnableFromApp') }}
                 </v-alert>
+
+                <template v-if="hasProgressMacro">
+                    <v-divider class="my-2" />
+                    <settings-row
+                        :title="$t('Settings.NotificationsTab.Progress')"
+                        :sub-title="
+                            pendingFirmwareRestart
+                                ? $t('Settings.NotificationsTab.MacrosPendingRestart')
+                                : $t('Settings.NotificationsTab.ProgressDescription')
+                        "
+                        :mobile-second-row="true">
+                        <v-select v-model="progressInterval" :items="progressOptions" hide-details outlined dense />
+                    </settings-row>
+                </template>
+                <template v-if="hasRunoutMacro">
+                    <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.Runout') }}</h3>
+                    <p class="mb-3 text--secondary runout-hint">
+                        {{
+                            pendingFirmwareRestart
+                                ? $t('Settings.NotificationsTab.MacrosPendingRestart')
+                                : $t('Settings.NotificationsTab.RunoutDescription')
+                        }}
+                    </p>
+                    <template v-if="availableRunoutSensors.length">
+                        <template v-for="(sensor, index) in availableRunoutSensors">
+                            <v-divider v-if="index" :key="'runout_divider_' + sensor" class="my-2" />
+                            <settings-row :key="sensor" :title="convertName(sensor)" :dynamic-slot-width="true">
+                                <v-switch
+                                    :input-value="isRunoutSensorEnabled(sensor)"
+                                    hide-details
+                                    class="mt-0"
+                                    @change="setRunoutSensor(sensor, $event)" />
+                            </settings-row>
+                        </template>
+                    </template>
+                    <p v-else class="mb-0 text-center font-italic">
+                        {{ $t('Settings.NotificationsTab.RunoutNoSensors') }}
+                    </p>
+                </template>
 
                 <!-- Connected devices: shown on every device type, so any
                      browser can review the list and drop a stale entry, not

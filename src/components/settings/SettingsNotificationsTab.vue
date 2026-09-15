@@ -709,7 +709,7 @@ export default class SettingsNotificationsTab extends Mixins(BaseMixin) {
                           notifierSectionHeader,
                           `url: vapid://${notifierSubscriber}/${names.join('/')}` +
                               `?keyfile=${root}/${this.privateKeyPath}&subfile=${root}/${this.configPath}`,
-                          'events: started, complete, error, cancelled',
+                          'events: started, complete, error, cancelled, paused, resumed',
                           'body: {% if event_message %}{event_message}{% else %}Print {event_name}',
                           '    {event_args[1].filename}{% endif %}',
                       ].join('\n')

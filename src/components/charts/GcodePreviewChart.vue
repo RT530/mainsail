@@ -95,6 +95,11 @@ const GRID_SPACING_MM = 25
 // earlier track can't match something from the far side of the layer
 const TOOLHEAD_LOOKBACK_POINTS = 4000
 
+// how far the drawn line may be extended to reach the toolhead. It only ever has to cover
+// the gap to the next stored vertex; anything longer means the head is off the extrusion
+// path (mid-travel), where drawing to it would cut a false line across the part.
+const MAX_ANCHOR_DISTANCE_MM = 10
+
 @Component
 export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     @Prop({ type: Array, required: true }) declare readonly runs: GcodePreviewRun[]
@@ -161,7 +166,30 @@ export default class GcodePreviewChart extends Mixins(BaseMixin, ThemeMixin) {
     }
 
     get splitRuns(): { done: GcodePreviewRun[]; remaining: GcodePreviewRun[] } {
-        return this.splitByProgress(this.runs)
+        const split = this.splitByProgress(this.runs)
+
+        return { done: this.anchorToToolhead(split.done), remaining: split.remaining }
+    }
+
+    // the cut lands on a stored vertex, which can sit up to the decimation spacing short of
+    // the nozzle - carry the last run through to the live position so the printed line
+    // actually meets the toolhead marker instead of trailing it
+    anchorToToolhead(done: GcodePreviewRun[]): GcodePreviewRun[] {
+        const tool = this.toolPosition
+        if (!tool || done.length === 0) return done
+
+        const lastRun = done[done.length - 1]
+        const lastPoint = lastRun[lastRun.length - 1]
+        if (!lastPoint) return done
+
+        const dx = tool[0] - lastPoint.x
+        const dy = tool[1] - lastPoint.y
+        if (dx * dx + dy * dy > MAX_ANCHOR_DISTANCE_MM * MAX_ANCHOR_DISTANCE_MM) return done
+
+        const anchored = [...done]
+        anchored[anchored.length - 1] = [...lastRun, { x: tool[0], y: tool[1], offset: lastPoint.offset }]
+
+        return anchored
     }
 
     // virtual_sdcard.file_position is where Klipper has *read* to, and it runs ahead of the

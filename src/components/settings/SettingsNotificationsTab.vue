@@ -15,14 +15,6 @@
                     </v-alert>
                     <template v-else>
                         <settings-row
-                            :title="$t('Settings.NotificationsTab.TestNotification')"
-                            :sub-title="$t('Settings.NotificationsTab.TestNotificationDescription')">
-                            <v-btn small outlined @click="sendTestNotification">
-                                {{ $t('Settings.NotificationsTab.SendTest') }}
-                            </v-btn>
-                        </settings-row>
-                        <v-divider class="my-2" />
-                        <settings-row
                             :title="$t('Settings.NotificationsTab.Enable')"
                             :sub-title="enableDescription"
                             :loading="loading">
@@ -33,13 +25,23 @@
                                 :disabled="loading"
                                 @change="onEnabledChanged" />
                         </settings-row>
+                        <template v-if="enabled">
+                            <v-divider class="my-2" />
+                            <settings-row
+                                :title="$t('Settings.NotificationsTab.TestNotification')"
+                                :sub-title="$t('Settings.NotificationsTab.TestNotificationDescription')">
+                                <v-btn small outlined @click="sendTestNotification">
+                                    {{ $t('Settings.NotificationsTab.SendTest') }}
+                                </v-btn>
+                            </settings-row>
+                        </template>
                     </template>
                 </template>
                 <v-alert v-else dense text type="info" class="mb-0 mt-3">
                     {{ $t('Settings.NotificationsTab.EnableFromApp') }}
                 </v-alert>
 
-                <template v-if="hasProgressMacro">
+                <template v-if="enabled && hasProgressMacro">
                     <v-divider class="my-2" />
                     <settings-row
                         :title="$t('Settings.NotificationsTab.Progress')"
@@ -52,7 +54,7 @@
                         <v-select v-model="progressInterval" :items="progressOptions" hide-details outlined dense />
                     </settings-row>
                 </template>
-                <template v-if="hasRunoutMacro">
+                <template v-if="enabled && hasRunoutMacro">
                     <h3 class="text-h5 mb-3 mt-6">{{ $t('Settings.NotificationsTab.Runout') }}</h3>
                     <p class="mb-3 text--secondary runout-hint">
                         {{

@@ -1379,7 +1379,7 @@
             "KeygenFailed": "Could not create the notification key pair on the printer.",
             "MacrosInstalled": "Notification macros installed and Klipper restarted.",
             "MacrosInstallFailed": "Could not install the notification macros in the Klipper config.",
-            "MacrosLegacyInstall": "An older copy of the notification macros is already in your Klipper config. Remove its [include] so Mainsail can manage them.",
+            "MacrosLegacyInstall": "Another copy of the notification macros is already loaded from your Klipper config. Remove its [include] so Mainsail can manage them.",
             "MacrosPendingRestart": "Applies after the current print finishes (Klipper restart needed).",
             "NeedsInstall": "Add Mainsail to your home screen to enable push notifications on this device.",
             "NeedsSecureContext": "Push notifications require a secure connection (HTTPS).",

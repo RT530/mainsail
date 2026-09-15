@@ -195,29 +195,32 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     }
 
     // the layer with an already-read printed segment under the nozzle at the nozzle's Z (mesh
-    // offset removed); -1 while lifted, off the path, or before the offset is known. The
-    // current layer keeps precedence, and a switch only ever goes *forward*: the file does,
-    // and a Z below the current layer while extruding is a scarf seam ramping down, not a
-    // return to the layer underneath
+    // offset removed). Walls stack, so several layers can have a segment there, and the one
+    // whose Z fits best wins - the current layer only keeps precedence on a tie, which is
+    // where its seam's end ramp meets the next layer's start. -1 while lifted, off every path,
+    // or before the offset is known. Never an *earlier* layer than the current one: the file
+    // only moves forward, and a Z below the current layer while extruding is a scarf seam
+    // ramping down, not a return to the layer underneath
     findLayerAtZ(z: number): number {
-        if (this.zOffsetEstimate === null) return -1
+        if (this.zOffsetEstimate === null || !this.toolExtruding) return -1
 
         const corrected = z - this.zOffsetEstimate
-        const current = this.liveLayerIndex
-        if (current !== null && this.toolOnLayerAtZ(current, corrected)) return current
-        if (!this.toolExtruding) return -1
+        let best = -1
+        let bestError = this.liftThreshold
+        for (let i = this.liveLayerIndex ?? 0; i < this.layers.length; i++) {
+            // nothing past the read position has been printed yet
+            if (this.layerStartOffsets[i] > this.fileProgressOffset) break
 
-        for (let i = this.layers.length - 1; i > (current ?? -1); i--) {
-            if (this.layerStartOffsets[i] > this.fileProgressOffset) continue
-            if (this.toolOnLayerAtZ(i, corrected)) return i
+            const segmentZ = this.onPathSegmentZ(this.layers[i], corrected)
+            if (segmentZ === null) continue
+
+            const error = Math.abs(segmentZ - corrected)
+            if (error < bestError) {
+                best = i
+                bestError = error
+            }
         }
-        return -1
-    }
-
-    toolOnLayerAtZ(index: number, corrected: number): boolean {
-        const segmentZ = this.onPathSegmentZ(this.layers[index], corrected)
-
-        return segmentZ !== null && Math.abs(segmentZ - corrected) <= this.liftThreshold
+        return best
     }
 
     // the Z of the layer's already-read printed segment under the nozzle, interpolated along
@@ -291,10 +294,12 @@ export default class GcodePreviewPanel extends Mixins(BaseMixin) {
     // without this the chart would treat XY nearness to a printed segment as being on it
     get toolOnLayer(): boolean {
         const z = this.liveZ
-        if (z === null || this.zOffsetEstimate === null || !this.toolExtruding) return false
-        if (!this.layers[this.currentLayerIndex]) return false
+        const layer = this.layers[this.currentLayerIndex]
+        if (z === null || !layer || this.zOffsetEstimate === null || !this.toolExtruding) return false
 
-        return this.toolOnLayerAtZ(this.currentLayerIndex, z - this.zOffsetEstimate)
+        const corrected = z - this.zOffsetEstimate
+        const segmentZ = this.onPathSegmentZ(layer, corrected)
+        return segmentZ !== null && Math.abs(segmentZ - corrected) <= this.liftThreshold
     }
 
     @Watch('sdCardFilePath')

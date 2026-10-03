@@ -63,8 +63,27 @@ const PWAConfig: Partial<VitePWAOptions> = {
         globPatterns: ['**/*.{js,css,html,woff,woff2,png,svg}'],
         // adds the push/notificationclick handlers to the generated worker
         importScripts: [`${pushWorkerFile}?v=${pushWorkerHash}`],
-        navigateFallbackDenylist: [/^\/(access|api|printer|server|websocket)/, /^\/webcam[2-4]?/],
+        navigateFallback: null,
+        directoryIndex: null,
         runtimeCaching: [
+            {
+                urlPattern: ({ request, url }) =>
+                    request.mode === 'navigate' &&
+                    !/^\/(access|api|printer|server|websocket|webcam[2-4]?)/.test(url.pathname),
+                handler: 'NetworkOnly',
+                options: {
+                    plugins: [
+                        {
+                            fetchDidSucceed: async ({ response }) => {
+                                if (response.status >= 500) throw new Error(`${response.status} ${response.statusText}`)
+                                return response
+                            },
+                            handlerDidError: async () =>
+                                caches.match(new URL('index.html', location.href).href, { ignoreSearch: true }),
+                        },
+                    ],
+                },
+            },
             {
                 urlPattern: /\/config\.json$/,
                 handler: 'StaleWhileRevalidate',
